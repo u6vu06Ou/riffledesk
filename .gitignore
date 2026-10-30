@@ -1,0 +1,15 @@
+node_modules/
+*.log
+*.tgz
+config.json
+config.json.tmp
+piles.json
+piles.json.tmp
+crates/*/target/
+.claude/worktrees/
+tests/fixtures/_test-config.json
+docs/media/_raw/
+index.db
+index.db-wal
+index.db-shm
+index.db-journal

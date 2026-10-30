@@ -1,0 +1,71 @@
+{
+  "name": "riffledesk",
+  "version": "0.2.0",
+  "description": "Local read-only 3D file browser (three.js card stack) with recursive full-text search",
+  "license": "MIT",
+  "author": "u6vu06ou",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/u6vu06ou/riffledesk.git"
+  },
+  "homepage": "https://github.com/u6vu06ou/riffledesk#readme",
+  "bugs": {
+    "url": "https://github.com/u6vu06ou/riffledesk/issues"
+  },
+  "keywords": [
+    "file-browser",
+    "three.js",
+    "webgl",
+    "full-text-search",
+    "sqlite",
+    "fts",
+    "claude-code",
+    "ai-transcripts",
+    "local-first",
+    "windows"
+  ],
+  "main": "server.js",
+  "bin": {
+    "riffledesk": "bin/riffledesk.js"
+  },
+  "files": [
+    "server.js",
+    "convos.js",
+    "countcache.js",
+    "fileops.js",
+    "indexer.js",
+    "indexer-worker.js",
+    "indexshared.js",
+    "secrets.js",
+    "public/",
+    "bin/",
+    "skills/",
+    "config.example.json",
+    "README.md",
+    "LICENSE",
+    "start.sh",
+    "start.bat"
+  ],
+  "scripts": {
+    "start": "node server.js",
+    "launch": "node bin/riffledesk.js",
+    "test": "node --test \"tests/*.test.mjs\"",
+    "test:e2e": "node tests/e2e.mjs",
+    "test:regress": "node tests/e2e-regress.mjs",
+    "test:edit": "node tests/edit-find-e2e.mjs",
+    "test:pile": "node tests/pile-e2e.mjs",
+    "test:project": "node tests/project-e2e.mjs",
+    "test:revise": "node tests/revise-e2e.mjs",
+    "test:view": "node tests/view-restore-e2e.mjs",
+    "test:select": "node tests/select-scroll-e2e.mjs",
+    "demo:make": "node scripts/demo/make-demo.mjs",
+    "demo:record": "node scripts/demo/record.mjs",
+    "test:browsers": "node tests/browsers-e2e.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

@@ -1,0 +1,127 @@
+# RiffleDesk
+
+**本機用、以瀏覽為主的檔案瀏覽器：把一個資料夾翻成一疊卡片，讓 AI 剛幫你寫的檔一看就找得到、讀得到、也改得回去。**
+
+<p align="center"><img src="docs/media/demo.gif" alt="翻找專案、全文搜尋、把改版清單交回給 AI" width="960"></p>
+
+English: [README.md](README.md)
+
+上面的示範全部跑在捏造的資料上（`scripts/demo/make-demo.mjs` 生的，一個虛構的四人工作室和他們的定價頁改版）。畫面裡沒有真實檔案、路徑、磁碟或對話。
+
+## 為什麼有這個東西
+
+跟 AI 一起做事，磁碟上會冒出你沒打過的字：筆記、草稿、改過的程式、你叫他寫的報告。接著最有趣的部分——讀它、判斷它、改它——發生在終端機或對話視窗，而那兩者都很不會呈現一份文件。
+
+RiffleDesk 就是補這個洞的介面：
+
+- **找出 AI 給你的檔。** 一個剛被寫進 60 個檔的資料夾沒有順序，卡片堆有：最新在前、縮圖一眼可讀、整個資料夾底下所有寫過的字都全文搜得到。還有一份「AI 最近給的」清單，來源是你自己本機的對話紀錄，所以「它十分鐘前寫的那個」是一次點擊，不是一行 `find`。
+- **AI 把檔推到你面前。** agent 的 shell 裡一句 `riffledesk open report.md`，每個開著的分頁都會跳出來並捲到它指的行。但**它不搶畫面**：背景分頁會先壓著、響一聲，等你回來才顯示。
+- **你推回去。** 改版模式裡，你直接在渲染出來的 HTML 上點「這個標題不對，把試用期長度寫清楚」，文字改了、備註加了、還編了號，然後按「交給 AI」。頁面旁就寫出一份清單，agent 用 `riffledesk wait` 接走、照著改，再把結果開出來給你看。
+
+<p align="center"><img src="docs/media/01-overview.png" alt="三欄：資料夾樹、卡片堆、文件閱讀區" width="900"></p>
+
+## 功能
+
+**瀏覽。** 左欄是資料夾樹，中間是 three.js 立起來的卡片堆（卡片有畫好的縮圖），游標掃過會像手撥紙一樣把鄰卡撥開，點一下就飛到右邊的閱讀面板。滾輪或拖曳在超大資料夾上做虛擬捲動。類型 chips（`.md`、程式碼、表格、HTML、圖片…）和「只看有這些檔的資料夾」把卡片堆收窄，`All` 連二進位檔都進來。
+
+<p align="center"><img src="docs/media/02-stack.png" alt="掃過混合資料夾的卡片堆" width="900"></p>
+
+**閱讀。** markdown 渲染（消毒過）、HTML 用沙箱 iframe 或上色原始碼、JSON 美化、CSV/TSV/XLSX 變表格、圖片與 PDF 就地開。程式碼有上色和行號、八套配色、換行開關，閱讀區可以查找並上一個／下一個／全部標亮。
+
+<p align="center"><img src="docs/media/03-reader-md.png" alt="在閱讀面板讀一份 markdown 報告" width="900"></p>
+
+**搜尋。** 全文、遞迴，檔名和文字類檔的內容都搜，背後是常駐索引（`node:sqlite` FTS5 trigram），由背景 worker thread 增量爬。短查詢退回只搜檔名；結果會回讀檔案驗證，不給過期的東西。
+
+<p align="center"><img src="docs/media/04-search.png" alt="全文搜尋結果與摘要片段" width="900"></p>
+
+**編輯。** 點 ✎（或 `Ctrl+E`）編輯正在讀的檔，`Ctrl+S` 存檔。寫回之前會比對磁碟版本：AI 這期間改過就跳差異對話框，不默默蓋掉。改名、刪除、存檔都能 `Ctrl+Z` 復原（刪除是進資源回收筒，絕不硬刪）。
+
+**多選。** `Ctrl` 點卡片選取，然後批次改名、刪除、複製路徑或整批推給 AI；單項失敗不會拖垮其他項。
+
+<p align="center"><img src="docs/media/07-selection-dark.png" alt="深色介面下選了三個檔與批次列" width="900"></p>
+
+**改版模式（HTML）。** 點、描述、編號。頁面在沙箱 iframe 裡附帶一支注入的 agent，每一筆改動都變成檔案旁的 `<檔名>.changes.json`，AI 用 `riffledesk changes` 讀。細節見 [API 文件](docs/API.md#revamp-mode-the-user-pushes-a-change-list-at-the-ai)。
+
+<p align="center"><img src="docs/media/05-revamp.png" alt="改版模式：定價頁上的編號改動，準備交給 AI" width="900"></p>
+
+**投影。** `POST /api/project`（CLI 打的就是這支）把一個檔開進每個分頁，可指定行號。背景分頁會壓著並只發一則通知。
+
+**疊。** `riffledesk show a.md b.md --title "…"` 把一組相關的檔一次交成一疊卡：只有這幾張，同資料夾的其他檔不會冒出來。它只跳通知、不切畫面；左欄留著最近的疊，`/?pile=<id>` 能重開。也可以 `riffledesk search … --json | riffledesk show`。
+
+<p align="center"><img src="docs/media/06-projection-notice.png" alt="背景分頁壓著被投影的檔，並跳系統通知" width="900"></p>
+
+**其他：** AI 對話清單（「這檔是哪則對話寫的？」）、釘選資料夾、把疑似金鑰的檔標出來的密鑰掃描，還有沒動作就完全停掉的 idle render loop。
+
+## 安裝
+
+```sh
+npx riffledesk
+```
+
+Node ≥ 22.5（索引要靠 `node:sqlite`；舊版 Node 可跑但只能即時掃描）。執行期零相依。從 clone 跑：`npm install && npm start`。Windows 用 `start.bat`，macOS/Linux 用 `start.sh`。
+
+預設只是瀏覽，只有你叫它寫才寫：存檔、改名、刪除，每個寫入都是明確的一次點擊，而且刪除進回收筒、救得回來。
+
+伺服器只綁 `127.0.0.1`，開在 <http://127.0.0.1:5177/>。用 `PORT`、埠參數或 `riffledesk --port 5180` 換埠（啟動器在埠被佔時會往上試到 +10；`--no-open` 不開瀏覽器）。
+
+## 給 AI agent 的命令列
+
+啟動器同時就是 agent 端的 CLI——這是這個工具對助手有用的另一半：
+
+```sh
+riffledesk open report.md --line 42     # 把檔推給所有已開分頁
+riffledesk show a.md b.md --title "重試預算"   # 一次交一組檔（一疊）
+riffledesk search "retry budget" --in ~/notes --ext .md --json | riffledesk show
+riffledesk changes page.html            # 讀使用者的改版清單
+riffledesk wait page.html               # 等使用者交過來
+riffledesk --help
+```
+
+`open` 打 `POST /api/project` 並帶 `X-RiffleDesk-CLI: 1` 標頭（瀏覽器的跨站 POST 偽造不出來），回報推給幾個分頁；沒有分頁、或伺服器舊到沒這支端點時，改用預設瀏覽器開 `/?open=<路徑>`。兩個子命令都會先探測本機埠，沒人回應就背景無頭起一台。輸出全英文方便腳本解析；`search` 沒結果 exit 1、參數錯 exit 2。
+
+教 agent 這套流程的 skill 放在 [`skills/riffledesk/`](skills/riffledesk/)。完整端點清單在 [docs/API.md](docs/API.md)。
+
+## 隱私
+
+- **只走 loopback。** 伺服器聽 `127.0.0.1`，只回 loopback 的 `Host`，跨站 API 呼叫一律拒絕（`Sec-Fetch-Site`＋每個寫入都要 `Origin`），並且每個回應都帶 `Cross-Origin-Resource-Policy: same-origin`——外面的網頁讀不到你的檔。
+- **沒有遙測、不上雲。** 什麼都不離開這台機器。（three.js、marked、DOMPurify、SheetJS 從 CDN 載、固定版本＋SRI，所以「頁面本身」需要網路；highlight.js 是內附的，離線可用。）
+- **它讀哪些對話紀錄。** 為了做「AI 最近給的」和對話清單，伺服器會在**本機**讀 Claude Code 的 `~/.claude/projects/*/*.jsonl` 和 Codex 的 `~/.codex*/sessions/**/*.jsonl` 裡的寫檔紀錄。只抽檔案路徑、標題、時間，不上傳，解析結果按 size+mtime 快取。
+- **關掉它。** `config.json` 寫 `convoRoots: []` 就完全不做對話掃描；`convoRoots: [{kind, dir}]` 可指向別的目錄。刪掉 `index.db*` 就清掉索引裡所有路徑名稱。
+- **瀏覽範圍**預設是所有本機磁碟加上家目錄文件。這是刻意的寬；`config.json` 的 `roots` 可以收窄。
+
+## 限制
+
+- **只看得到截圖的雲端助手碰不到這台伺服器。** CLI 要 agent 在同一台機器上有 shell。對跑在別處的聊天助手而言，這是你自己操作的瀏覽器，不是遠端端點。
+- 預設唯讀；只有四個寫入端點（reveal／open／rename／trash）加上存檔與釘選會動磁碟，而且刪除只進回收筒。
+- 文字編輯只收 UTF-8、≤5MB、文字類。非 UTF-8（Big5、UTF-16）、二進位檔、XLSX 只能看不能改。復原堆疊在記憶體、20 步、重開即失效。回收筒復原只支援 Windows。
+- XLSX 只顯示第一張工作表；PDF 只是嵌入預覽。
+- **執行中**的 HTML 頁面裡的查找碰不到它的 DOM——先切回安全預覽或原始碼。
+- 超大資料夾（System32 等級）第一次列舉會回數 MB JSON，目錄快取只能緩解重複。
+- 前端搜尋框只過濾目前資料夾的檔名；遞迴全文搜尋走 `/api/search`。
+
+## 相容性
+
+Chromium、Firefox、Safari（後兩者最新版）。卡片堆需要 WebGL；不支援的電腦會顯示一張說明卡，不是卡片堆（樹、搜尋和閱讀區照常可用，檔案也照樣開得起來）。跑到一半掉 context（顯示卡驅動重置）時同一張說明卡會蓋住卡片欄，並給一顆重新載入。沒有 2D 備援，所以舊的 `?flat=1` 書籤還能開，但已經沒有作用。伺服器 Windows 和 POSIX 都能跑；回收筒復原和在檔案總管中選取是 Windows 專屬。
+
+## 設定
+
+第一次啟動會產生 `config.json`（不進 git；`config.example.json` 是空白範本）。鍵有：`roots`（額外可瀏覽根目錄）、`pinned`（釘選，介面會寫回）、`indexSkipDirs`、`indexMaxMB`、`indexContent`、`secretScan`、`secretScanSkipDirs`、`convoRoots`、`browser`。用 `RIFFLEDESK_CONFIG` 指向別的檔可以隔離一份設定。
+
+## 開發
+
+```sh
+npm test              # 伺服器層（node --test，5179）
+npm run test:e2e      # 瀏覽器端完整驗收（playwright，5178）
+npm run test:regress  # 迴歸抽查，夾具全自建
+npm run test:edit     # 編輯／查找／衝突（5184）
+npm run test:project  # 投影（5188）
+npm run test:select   # 卡片多選（5190）
+npm run demo:make     # 生捏造的示範資料
+npm run demo:record   # 從它重錄 docs/media
+```
+
+瀏覽器測試用 `playwright-core` 開已安裝的 Chrome，跑在 5178 以後的埠，夾具全建在暫存目錄，不會碰你真實的 `config.json` 或索引。
+
+## 授權
+
+MIT——見 [LICENSE](LICENSE)。

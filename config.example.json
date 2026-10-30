@@ -1,0 +1,9 @@
+{
+  "roots": [],
+  "pinned": [],
+  "indexSkipDirs": [],
+  "indexMaxMB": 2048,
+  "indexContent": true,
+  "secretScan": true,
+  "secretScanSkipDirs": []
+}

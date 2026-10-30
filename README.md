@@ -1,0 +1,127 @@
+# RiffleDesk
+
+**A local, read-mostly file browser that makes a folder feel like a riffle of cards — so the files an AI just wrote for you are easy to find, read and hand back.**
+
+<p align="center"><img src="docs/media/demo.gif" alt="Browsing a project, searching its contents, and handing a revamp list back to the AI" width="960"></p>
+
+繁體中文版：[README.zh-TW.md](README.zh-TW.md)
+
+The demo above runs entirely on invented data (`scripts/demo/make-demo.mjs`) — a fictional four-person studio and their pricing-page rework. Nothing in it is a real file, path, drive or conversation.
+
+## Why this exists
+
+Working with a coding assistant means files appear on your disk that you did not type: notes, drafts, patched source, a report you asked for. Then the interesting part — reading them, judging them, editing them — happens in a terminal or in a chat transcript, both of which are bad at showing a document.
+
+RiffleDesk is the missing surface for that exchange:
+
+- **Finding what the AI gave you.** A folder of 60 freshly written files has no order. The card stack does: newest first, thumbnails readable at a glance, full-text search over everything ever written under a folder. There is a "recent from AI" list built from your own local transcripts, so "the file it wrote ten minutes ago" is one click, not a `find` command.
+- **The AI pushing a file at you.** `riffledesk open report.md` from the agent's shell pops the file up in every open tab, scrolled to the line it means. It never steals the screen: a background tab holds it, rings once, and shows it when you come back.
+- **You pushing back.** In revamp mode you point at a rendered HTML page and say "this heading is wrong, make the trial length explicit" — text changes, notes, numbered — then press *hand to AI*. That writes a list next to the page, the agent picks it up with `riffledesk wait`, edits, and re-opens the result.
+
+<p align="center"><img src="docs/media/01-overview.png" alt="Three columns: folder tree, card stack, document reader" width="900"></p>
+
+## Features
+
+**Browsing.** Left column is a folder tree; the middle is a three.js stack of upright cards with rendered thumbnails; hovering pushes neighbours aside like a hand riffling paper, clicking flies the card into a real-DOM reader on the right. Wheel or drag scrolls a virtual reel over arbitrarily large folders. Type filters (`.md`, code, tables, HTML, images…) and a folder-only-with-these-files switch narrow the stack; `All` shows bins too.
+
+<p align="center"><img src="docs/media/02-stack.png" alt="The card stack mid-scroll over a mixed folder" width="900"></p>
+
+**Reading.** Markdown renders (sanitised), HTML renders in a sandboxed iframe or as highlighted source, JSON prettifies, CSV/TSV/XLSX become tables, images and PDFs open in place. Highlighting and line numbers for code, eight colour themes, a wrap toggle, and find-in-reader with next/previous/count-all.
+
+<p align="center"><img src="docs/media/03-reader-md.png" alt="Reading a markdown report in the reader panel" width="900"></p>
+
+**Searching.** Full-text, recursive, over file names *and* contents of text-like files, backed by a persistent index (`node:sqlite` FTS5 trigram) that is crawled incrementally in a background worker thread. Short queries fall back to file names; results are re-verified against the file text so nothing stale comes back.
+
+<p align="center"><img src="docs/media/04-search.png" alt="Full-text search results with snippets" width="900"></p>
+
+**Editing.** Click ✎ (or `Ctrl+E`) to edit the file you are reading, `Ctrl+S` to save. Before writing, the reader compares the disk version: if an AI rewrote the file meanwhile, you get a diff dialog instead of a silent overwrite. Renames, deletes and saves all undo with `Ctrl+Z` (deletes go to the OS trash, never a hard delete).
+
+**Multi-select.** `Ctrl`-click cards to select, then rename, trash, copy paths or push the selection as one batch; a failed item keeps the rest alive.
+
+<p align="center"><img src="docs/media/07-selection-dark.png" alt="Three files selected with the batch bar, dark theme" width="900"></p>
+
+**Revamp mode (HTML).** Point, describe, number. The page is served through a sandboxed iframe with an injected agent; every change becomes an entry in `<name>.changes.json` next to the file, which the AI reads with `riffledesk changes`. See the [API doc](docs/API.md#revamp-mode-the-user-pushes-a-change-list-at-the-ai).
+
+<p align="center"><img src="docs/media/05-revamp.png" alt="Revamp mode: numbered changes on a pricing page, handed to the AI" width="900"></p>
+
+**Projection.** `POST /api/project` (what the CLI calls) opens a file in every tab, optionally at a line. Background tabs hold it and raise one notification per burst.
+
+<p align="center"><img src="docs/media/06-projection-notice.png" alt="A background tab holding a projected file, with a system notification" width="900"></p>
+
+**Piles.** `riffledesk show a.md b.md --title "…"` hands over a whole shortlist as one stack — only those cards, nothing else from the folders they live in. It notifies rather than switching; the left column keeps the recent piles and `/?pile=<id>` reopens one. `riffledesk search … --json | riffledesk show` works too.
+
+**Also:** AI-conversation lists ("which conversation wrote this file?"), pinned folders, a secret scan that flags files containing what looks like an API key, and an idle render loop that stops entirely when nothing moves.
+
+## Install
+
+```sh
+npx riffledesk
+```
+
+Node ≥ 22.5 (the index needs `node:sqlite`; older Node runs, with live-scan search only). Zero runtime dependencies. Or from a clone: `npm install && npm start`. Windows: `start.bat`; macOS/Linux: `start.sh`.
+
+It browses by default and only writes when you ask it to: save, rename, trash — every write is an explicit click, and trash is recoverable.
+
+The app binds `127.0.0.1` only and opens at <http://127.0.0.1:5177/>. Change the port with `PORT`, a port argument, or `riffledesk --port 5180` (the launcher also steps up to +10 when busy; `--no-open` skips the browser).
+
+## Command line for AI agents
+
+The launcher is also the agent-side CLI — this is the half that makes the tool useful to an assistant:
+
+```sh
+riffledesk open report.md --line 42     # push a file into every open tab
+riffledesk show a.md b.md --title "Retry budget"   # hand over a shortlist as one stack
+riffledesk search "retry budget" --in ~/notes --ext .md --json | riffledesk show
+riffledesk changes page.html            # read the user's revamp list
+riffledesk wait page.html               # block until the user hands one over
+riffledesk --help
+```
+
+`open` POSTs to `/api/project` with the header `X-RiffleDesk-CLI: 1` (a browser's cross-site POST cannot forge it) and reports how many tabs took the file; with none connected, or on a server that predates the endpoint, it opens `/?open=<path>` in the default browser instead. Both subcommands probe the local port first and start a detached, windowless server when nothing answers. Output is English so scripts can parse it; `search` exits 1 when nothing matched, 2 on bad usage.
+
+A ready-made skill that teaches an agent this loop lives in [`skills/riffledesk/`](skills/riffledesk/). The full endpoint reference is in [docs/API.md](docs/API.md).
+
+## Privacy
+
+- **Loopback only.** The server listens on `127.0.0.1`, replies only to loopback `Host` headers, rejects cross-site API calls (`Sec-Fetch-Site` + `Origin` on every write), and sends `Cross-Origin-Resource-Policy: same-origin`, so a random web page cannot read your files through it.
+- **No telemetry, no cloud.** Nothing leaves the machine. (three.js, marked, DOMPurify and SheetJS load from a CDN with pinned versions and SRI, so the page itself needs network; highlight.js is vendored and works offline.)
+- **The transcripts it reads.** To build the "recent from AI" and conversation lists, the server reads *locally* the write/edit records in Claude Code's `~/.claude/projects/*/*.jsonl` and Codex's `~/.codex*/sessions/**/*.jsonl`. Only file paths, titles and timestamps are extracted, nothing is uploaded, and the parse is cached by size+mtime.
+- **Turning it off.** `convoRoots: []` in `config.json` disables transcript scanning entirely; `convoRoots: [{kind, dir}]` points it at other directories. Delete `index.db*` to wipe every path name the index holds.
+- **Browsing scope** defaults to all local drives plus your home documents. That is wide on purpose; `config.json` `roots` narrows it.
+
+## Limits
+
+- **A cloud assistant that only sees screenshots cannot reach the server.** The CLI works for an agent with a shell on the same machine. For a chat assistant running elsewhere, this is a browser you drive yourself, not a remote endpoint.
+- Read-only by default; the four write endpoints (reveal, open, rename, trash) plus save and pin are the only things that touch disk, and trash never hard-deletes.
+- Text editing is UTF-8 only, ≤ 5 MB, text kinds only. Non-UTF-8 (Big5, UTF-16), binaries and XLSX are view-only. The undo stack lives in memory, 20 steps, gone on restart. Trash-undo is Windows-only.
+- XLSX shows the first sheet; PDF is an embed only.
+- The find box inside a *running* HTML page cannot reach its DOM — switch to the safe preview or the source.
+- Very large folders (System32-scale) return megabytes of JSON on first listing; a directory cache softens repeats.
+- The front-end search box filters file names in the current folder; recursive full-text search is the `/api/search` path.
+
+## Compatibility
+
+Chromium, Firefox and Safari — the last two latest versions. The card stack needs WebGL; on a machine without it, RiffleDesk shows a notice card instead of the stack (the tree, search and the reader stay usable, and files still open). If the context is lost mid-session — a graphics driver reset — the same notice covers the card column and offers a reload. There is no 2D fallback, so a stale `?flat=1` bookmark still works but changes nothing. The server is POSIX and Windows; trash-undo and the file-manager reveal are Windows-specific.
+
+## Configuration
+
+`config.json` is created on first start (git-ignored; `config.example.json` is the blank template). Keys: `roots` (extra browsable roots), `pinned` (starred folders, written back by the UI), `indexSkipDirs`, `indexMaxMB`, `indexContent`, `secretScan`, `secretScanSkipDirs`, `convoRoots`, `browser`. Point `RIFFLEDESK_CONFIG` at another file to isolate a profile.
+
+## Development
+
+```sh
+npm test              # server-level (node --test, port 5179)
+npm run test:e2e      # full browser acceptance (playwright, 5178)
+npm run test:regress  # regression sweep, self-built fixtures
+npm run test:edit     # editor / find / conflict (5184)
+npm run test:project  # projection (5188)
+npm run test:select   # card selection (5190)
+npm run demo:make     # build the invented demo dataset
+npm run demo:record   # re-record docs/media from it
+```
+
+The browser tests drive an installed Chrome through `playwright-core` on ports 5178+ and build their own fixtures in the temp directory, so they never touch your real `config.json` or index.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).

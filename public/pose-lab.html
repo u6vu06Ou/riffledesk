@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>擺位實驗室</title>
+<style>
+  :root { --bg: #101418; --panel: #151b23; --fg: #d8dee6; --dim: #8fa0b3; --acc: #2f7cf6; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font: 13px "Segoe UI", "Microsoft JhengHei", sans-serif; }
+  #panel { position: fixed; left: 0; top: 0; bottom: 0; width: 33.333%; box-sizing: border-box;
+    background: var(--panel); padding: 14px 16px; overflow-y: auto; border-right: 1px solid #222b36; }
+  #view { position: fixed; left: 33.333%; top: 0; right: 0; bottom: 0; }
+  #view canvas { display: block; }
+  h1 { font-size: 16px; margin: 0 0 6px; }
+  p.hint { color: var(--dim); margin: 4px 0 10px; line-height: 1.6; }
+  h2 { font-size: 13px; margin: 16px 0 6px; color: #fff; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+  .row span { width: 92px; color: var(--dim); }
+  .row input[type=range] { flex: 1; }
+  .row em { width: 52px; font-style: normal; text-align: right; }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  button { background: #222b36; color: var(--fg); border: 1px solid #2e3a48; border-radius: 6px;
+    padding: 5px 10px; cursor: pointer; font: inherit; }
+  button.on { background: var(--acc); border-color: var(--acc); color: #fff; }
+  #json { width: 100%; height: 150px; box-sizing: border-box; background: #0c1015; color: #9fb3c8;
+    border: 1px solid #2e3a48; border-radius: 6px; font: 11px Consolas, monospace; }
+  button.rs { padding: 3px 8px; font-size: 12px; color: #fbbf24; border-color: #5a4a1a; }
+  #saved { color: #4ade80; margin-left: 6px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="panel">
+  <h1>擺位實驗室</h1>
+  <p class="hint">右邊 2/3 跟主程式的檔案堆一樣大。把五張文件擺成你想要的樣子，設定會自動存起來，隊長直接讀。<br>
+  <b>點卡片</b>選取 → 拖彩色箭頭移動／拖圓環旋轉（按 <b>W</b> 移動、<b>E</b> 旋轉）。<br>
+  <b>空白處左鍵拖</b>＝繞著看、<b>右鍵拖</b>＝平移、<b>滾輪</b>＝拉近拉遠（這就是鏡頭視角）。</p>
+
+  <h2>選取的卡片</h2>
+  <div class="btns" id="pick"></div>
+  <div class="btns">
+    <button id="mT" class="on">移動 (W)</button><button id="mR">旋轉 (E)</button><button id="rPos" class="rs">位置還原</button>
+  </div>
+  <div class="row"><span>往後仰／前傾</span><input id="sTilt" type="range" min="-60" max="60" step="1"><em id="vTilt"></em><button id="rTilt" class="rs">還原</button></div>
+  <div class="row"><span>上半部翻平</span><input id="sBend" type="range" min="0" max="90" step="1"><em id="vBend"></em><button id="rBend" class="rs">還原</button></div>
+  <div class="row"><span>翻平折點高度</span><input id="sHinge" type="range" min="10" max="90" step="1"><em id="vHinge"></em><button id="rHinge" class="rs">還原</button></div>
+
+  <h2>鏡頭</h2>
+  <div class="row"><span>視野角度 FOV</span><input id="sFov" type="range" min="10" max="70" step="1"><em id="vFov"></em><button id="rFov" class="rs">還原</button></div>
+  <div class="btns"><button id="camFront">正面看</button><button id="camTop">斜上看</button><button id="rCam" class="rs">鏡頭還原</button></div>
+
+  <h2>設定（自動存檔<span id="saved"></span>）</h2>
+  <div class="btns"><button id="copy">複製設定</button><button id="reset">全部重設</button></div>
+  <textarea id="json" readonly></textarea>
+</div>
+<div id="view"></div>
+<script type="module" src="./pose-lab.js"></script>
+</body>
+</html>

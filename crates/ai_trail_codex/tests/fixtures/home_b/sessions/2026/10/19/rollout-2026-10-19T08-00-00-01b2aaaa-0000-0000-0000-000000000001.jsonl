@@ -1,0 +1,7 @@
+{"timestamp": "2026-10-19T08:00:00.000Z", "type": "session_meta", "payload": {"session_id": "01b2aaaa-0000-0000-0000-000000000001", "cwd": "D:\\workspace\\demo\\PROJ", "originator": "Claude Code"}}
+{bad json here
+{"timestamp": "2026-10-19T08:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "OLDER mention of D:\\workspace\\demo\\PROJ\\src\\main.rs"}]}}
+{"timestamp": "2026-10-19T08:00:02.000Z", "type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "input": "*** Begin Patch\n*** Update File: D:/workspace/demo/PROJ/only_update.md\n@@\n*** Move to: D:/workspace/demo/PROJ/moved.md\n*** End Patch"}}
+{"timestamp": "2026-10-19T08:00:03.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "使用者問的 D:\\workspace\\demo\\PROJ\\user_only.md 也算嗎"}]}}
+{"timestamp": "2026-10-19T08:00:04.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "C: 和 D:\\folder 和相對 src\\x.md 都不算。"}]}}
+{"timestamp": "2026-10-19T08:00:05.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "中 D:\\workspace\\demo\\PROJ\\bad�.md"}]}}

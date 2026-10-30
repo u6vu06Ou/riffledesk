@@ -1,0 +1,20 @@
+[package]
+name = "fulltext"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+license = "MIT"
+description = "Incremental full-text index (SQLite FTS5 trigram) for file contents"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# `rusqlite` is already a normal dependency and stays visible to the tests;
+# serde_json is only needed to assert on `Error` serialisation.
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true

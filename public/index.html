@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-L9ZiMNZGXaZeZpdtR/opDdnOgsAWvAbET7rH1cKeVySxaaiCNl9RB86UruTMt+eA' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data: blob:; img-src 'self' data: blob: https:; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:,">
+<title>3D 檔案瀏覽器</title>
+<style>
+  /* ------------------------------------------------ theme tokens
+     暗（預設）：深灰底（非純黑）＋暖白字（非純白），對比約 11~12:1，清楚但字邊不發光。
+     亮：書頁紙色（暖米色）＋深褐墨字，低藍光、低眩光，長時間閱讀不累。
+     沒選過 → 跟系統（prefers-color-scheme）；選過 → html[data-theme] 覆蓋。 */
+  :root {
+    color-scheme: dark;
+    --bg: #121417; --surface: #171a1f; --bar: rgba(18,20,24,0.92);
+    --hover: #22262d; --sel: #2c3b55; --sel-fg: #f1ede4;
+    --fg: #d4d0c8; --fg-dim: #808893; --fg-faint: #4a525d; --border: rgba(255,255,255,0.08);
+    --input-bg: #1d2127; --input-border: #353c47; --chip-fg: #a7b0bc;
+    --accent: #4a7fd8; --accent-fg: #ffffff; --accent-soft: rgba(74,127,216,0.35);
+    --panel-bg: #1c1f24; --panel-fg: #d9d4c9; --panel-head: #23272d; --panel-border: #343a43;
+    --panel-dim: #8d949e; --heading: #ece6d8; --code-bg: #262a31; --link: #8cb4ff;
+    --btn-bg: #2c3138; --btn-hover: #373d46; --btn-fg: #d4d0c8; --shadow: rgba(0,0,0,0.55);
+    --cnt: #a9cdff; --cnt-zero: #3f4c5c; --cnt-deep: #5c6470; --ai: #3fbf9a; --star: #55677c; --star-on: #f5c518;
+    --err: #ff8a80;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #e8e0cc; --surface: #f2ebdc; --bar: rgba(242,235,220,0.94);
+      --hover: #e7dcc5; --sel: #d9c9a5; --sel-fg: #2b241b;
+      --fg: #3a3229; --fg-dim: #85775f; --fg-faint: #b9ac92; --border: rgba(70,50,20,0.14);
+      --input-bg: #faf5ea; --input-border: #d3c6aa; --chip-fg: #6d604b;
+      --accent: #46638c; --accent-fg: #fbf7ee; --accent-soft: rgba(70,99,140,0.30);
+      --panel-bg: #f7f1e3; --panel-fg: #3a3229; --panel-head: #eee5d1; --panel-border: #dccfb4;
+      --panel-dim: #85775f; --heading: #241e16; --code-bg: #eee6d3; --link: #355d94;
+      --btn-bg: #e4d9c2; --btn-hover: #d9ccb0; --btn-fg: #4a4034; --shadow: rgba(60,40,10,0.22);
+      --cnt: #1f4f9a; --cnt-zero: #c2b59b; --cnt-deep: #bdb4a2; --ai: #2f8a6a; --star: #b3a68d; --star-on: #c99a10;
+      --err: #a33a2a;
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #e8e0cc; --surface: #f2ebdc; --bar: rgba(242,235,220,0.94);
+    --hover: #e7dcc5; --sel: #d9c9a5; --sel-fg: #2b241b;
+    --fg: #3a3229; --fg-dim: #85775f; --fg-faint: #b9ac92; --border: rgba(70,50,20,0.14);
+    --input-bg: #faf5ea; --input-border: #d3c6aa; --chip-fg: #6d604b;
+    --accent: #46638c; --accent-fg: #fbf7ee; --accent-soft: rgba(70,99,140,0.30);
+    --panel-bg: #f7f1e3; --panel-fg: #3a3229; --panel-head: #eee5d1; --panel-border: #dccfb4;
+    --panel-dim: #85775f; --heading: #241e16; --code-bg: #eee6d3; --link: #355d94;
+    --btn-bg: #e4d9c2; --btn-hover: #d9ccb0; --btn-fg: #4a4034; --shadow: rgba(60,40,10,0.22);
+    --cnt: #1f4f9a; --cnt-zero: #c2b59b; --cnt-deep: #bdb4a2; --ai: #2f8a6a; --star: #b3a68d; --star-on: #c99a10;
+    --err: #a33a2a;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg);
+    font-family: var(--font, "Segoe UI", "Microsoft JhengHei", "PingFang TC", system-ui, sans-serif); }
+  button, input, select { font-family: inherit; }
+  #gl { position: fixed; left: 0; right: 0; top: 44px; bottom: 0; display: block; touch-action: none; }
+
+  /* ---------------------------- 沒有 WebGL：中間欄一張說明卡＋最低限度檔案清單（no3d.js） */
+  #noview { position: fixed; left: 0; width: 0; top: 44px; bottom: 0; overflow-y: auto; overflow-x: clip;
+    padding: 28px 24px 40px; box-sizing: border-box; }
+  #noview .ncard { max-width: 560px; margin: 0 auto 26px; background: var(--panel-bg); color: var(--fg);
+    border: 1px solid var(--panel-border); border-radius: 12px; padding: 20px 22px; box-shadow: 0 6px 24px var(--shadow); }
+  #noview .nicon { font-size: 30px; line-height: 1; margin-bottom: 10px; }
+  #noview h2 { margin: 0 0 8px; font-size: 17px; color: var(--heading); }
+  #noview p { margin: 0 0 12px; font-size: 13px; line-height: 1.7; }
+  #noview .nfix b { display: block; font-size: 13px; margin-bottom: 6px; color: var(--heading); }
+  #noview .nfix ul { margin: 0 0 12px; padding-left: 20px; font-size: 13px; line-height: 1.8; }
+  #noview .nlink { display: inline-block; margin-bottom: 12px; color: var(--link); font-size: 13px; }
+  #noview .nhint { color: var(--fg-dim); font-size: 12px; margin: 0; }
+  #noview .nlist { max-width: 720px; margin: 0 auto; }
+  #noview .nlist.empty::after { content: attr(data-empty); display: block; text-align: center; color: var(--fg-dim); font-size: 13px; padding: 16px; }
+  #noview .nrow { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 8px; overflow: hidden;
+    border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; color: var(--fg); }
+  #noview .nrow:hover { background: var(--hover); }
+  #noview .nrow.sel { background: var(--sel); color: var(--sel-fg); }
+  #noview .nrow.reading { background: var(--sel); box-shadow: inset 3px 0 0 var(--star-on); }
+  #noview .nthumb { width: 64px; height: 40px; display:block; flex: none; border-radius: 3px; background: var(--input-bg);
+    border: 1px solid var(--border); box-sizing: border-box; }
+  #noview .nrow.binary .nthumb { visibility: hidden; }
+  #noview .nname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #noview .nmeta { flex: none; color: var(--fg-dim); font-size: 11px; }
+  body.no3d-mode #viewBar { display: none; }   /* 視角按鈕是 3D 專屬 */
+  /* 3D 跑到一半顯卡驅動重置（webglcontextlost）：同一張說明卡蓋在卡片欄上，樹和閱讀區照用 */
+  #glnotice { display: none; position: fixed; top: 44px; bottom: 0; z-index: 6;
+    padding: 28px 24px; overflow-y: auto; box-sizing: border-box; background: var(--panel-bg); }
+  body.gl-lost #glnotice { display: block; }
+  #glnotice .nreload { margin-top: 4px; font: inherit; font-size: 13px; padding: 5px 12px; cursor: pointer;
+    color: var(--fg); background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 6px; }
+  #glnotice .nreload:hover { border-color: var(--accent); }
+
+  /* ------------------------------------------------ toolbar */
+  #toolbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 44px; z-index: 30;
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: var(--bar); color: var(--fg); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border); font-size: 13px; box-sizing: border-box;
+  }
+  #toolbar .brand { font-weight: 700; letter-spacing: 0.5px; flex: none; white-space: nowrap; }
+  @media (max-width: 1280px) { #toolbar .brand { display: none; } }
+  #searchBox {
+    background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
+    border-radius: 6px; padding: 5px 8px; font-size: 13px; outline: none; width: 260px; flex: 0 1 260px; min-width: 120px;
+  }
+  /* chips 放不下時橫向捲（滾輪可捲），兩端淡出提示還有 */
+  #chips { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; flex: 0 1 auto; min-width: 80px;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--fl, 0px), #000 calc(100% - var(--fr, 0px)), transparent 100%);
+            mask-image: linear-gradient(90deg, transparent 0, #000 var(--fl, 0px), #000 calc(100% - var(--fr, 0px)), transparent 100%); }
+  #chips::-webkit-scrollbar { display: none; }
+  .chip {
+    flex: none; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--chip-fg);
+    border-radius: 20px; padding: 4px 11px; font-size: 12px; cursor: pointer;
+    user-select: none; white-space: nowrap;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--fg); }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #chips.muted .chip { opacity: .4; }   /* 搜尋期間 chips 暫不生效的淡化提示 */
+  #status { margin-left: auto; color: var(--fg-dim); flex: 0 1 auto; min-width: 0; font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sortSel, #fontSel { flex: none; background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
+    border-radius: 6px; padding: 4px 6px; font-size: 12px; cursor: pointer; }
+  /* 視角按鈕列：卡堆左下角（右下是調參） */
+  #viewBar { position: fixed; bottom: 30px; z-index: 11; display: flex; gap: 6px; }
+  #viewBar button { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
+    border-radius: 6px; padding: 3px 9px; font-size: 12px; cursor: pointer; opacity: 0.85; }
+  #viewBar button:hover { border-color: var(--accent); opacity: 1; }
+  #viewBar button.has { color: var(--star-on); }
+  #toast { position: fixed; z-index: 60; left: 50%; bottom: 70px; transform: translateX(-50%);
+    background: var(--panel-head); color: var(--fg); border: 1px solid var(--panel-border);
+    padding: 6px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.on { opacity: 1; }
+  /* an actionable toast (e.g. the 復原 link after rename/trash) must be clickable */
+  #toast.on.act { pointer-events: auto; }
+  #toast a { color: var(--link); margin-left: 10px; cursor: pointer; text-decoration: underline; }
+  #selBar { position: fixed; z-index: 45; bottom: 64px; transform: translateX(-50%); display: none;
+    align-items: center; gap: 8px; padding: 7px 12px; border-radius: 10px; font-size: 13px;
+    background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--accent); box-shadow: 0 10px 30px var(--shadow); }
+  #selBar.on { display: flex; }
+  #selBar .n, #selBar button, #selBar .hint { white-space: nowrap; }
+  #selBar .n { font-weight: 650; color: var(--heading); }
+  #selBar button { border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--btn-fg);
+    border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+  #selBar button.danger { color: var(--err); }
+  #selBar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg, #fff); }
+  #selBar .hint { color: var(--panel-dim); font-size: 11px; }
+  #ctxMenu { position: fixed; z-index: 70; display: none; min-width: 200px; padding: 4px;
+    background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--panel-border);
+    border-radius: 8px; box-shadow: 0 10px 30px var(--shadow); font-size: 13px; }
+  #ctxMenu.on { display: block; }
+  #ctxMenu .it { padding: 6px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+  #ctxMenu .it:hover { background: var(--hover); }
+  #ctxMenu .it.danger { color: var(--err); }
+  #ctxMenu .sep { height: 1px; background: var(--panel-border); margin: 4px 6px; }
+  #ctxMenu .head { padding: 4px 12px 6px; color: var(--panel-dim); font-size: 12px; max-width: 320px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #dlg { position: fixed; inset: 0; z-index: 80; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.35); }
+  #dlg.on { display: flex; }
+  #dlg .box { width: min(440px, 90vw); background: var(--panel-bg); color: var(--panel-fg);
+    border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px 18px; box-shadow: 0 18px 60px var(--shadow); }
+  #dlg .ttl { font-weight: 650; color: var(--heading); margin-bottom: 8px; }
+  #dlg .body { color: var(--panel-dim); font-size: 13px; margin-bottom: 10px; word-break: break-all; white-space: pre-line; max-height: 40vh; overflow: auto; }
+  #dlg .inp { width: 100%; box-sizing: border-box; background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--input-border); border-radius: 6px; padding: 6px 8px; font-size: 14px; }
+  #dlg .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  #dlg button { border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--btn-fg);
+    border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 13px; }
+  #dlg button.yes { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #dlg button.yes.danger { background: var(--err); border-color: var(--err); color: #fff; }
+  #readerBody mark { background: #f3d36b; color: #241e16; border-radius: 2px; padding: 0 1px; }
+  .tbtn { flex: none; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--fg);
+    border-radius: 6px; padding: 3px 9px; font-size: 14px; line-height: 20px; cursor: pointer; }
+  .tbtn:hover, .tbtn.on { border-color: var(--accent); }
+  /* 全選切換鈕的按下態：不只是換框色，底色也變強調色（看得出「現在是全選中」） */
+  .tbtn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg, #fff); }
+
+  /* 「有新檔案」藥丸提示：浮在卡片堆上方，點一下才載入（不自己打亂卡片）。
+     隱藏只由 live.js 的 inline style 控制（CSS 層不設 display:none，否則 inline '' 蓋不過它） */
+  #livePill { position: fixed; z-index: 22; top: 92px; transform: translateX(-50%);
+    background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--accent);
+    border-radius: 999px; padding: 6px 16px; font-size: 13px; cursor: pointer;
+    box-shadow: 0 8px 24px var(--shadow); white-space: nowrap; }
+  #livePill:hover { background: var(--accent); color: var(--accent-fg); }
+
+  /* ------------------------------------------------ folder tree */
+  #tree {
+    position: fixed; left: 0; top: 44px; bottom: 0; z-index: 12; width: 33.333%;
+    background: var(--surface); color: var(--fg); overflow-y: auto; overflow-x: clip;
+    border-right: 1px solid var(--border); font-size: 13px;
+    scrollbar-width: thin; scrollbar-color: var(--input-border) transparent;
+    box-sizing: border-box;
+  }
+  #treeBar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 6px;
+    padding: 7px 12px; background: var(--surface); border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--fg-dim); cursor: pointer; user-select: none; }
+  #treeBar input { accent-color: var(--accent); margin: 0; }
+  #tree .sec {
+    padding: 9px 10px 3px; font-size: 11px; color: var(--fg-dim); letter-spacing: 1px;
+    text-transform: uppercase; user-select: none;
+  }
+  .trow {
+    display: flex; align-items: center; gap: 2px; padding: 2px 6px 2px 0;
+    cursor: pointer; user-select: none; border-radius: 5px; margin: 0 5px;
+    white-space: nowrap; position: relative;
+  }
+  .trow:hover { background: var(--hover); }
+  .trow.sel { background: var(--sel); color: var(--sel-fg); }
+  /* hover 預覽：淡外框（不再用底色，避免跟「鎖定＝實心選取色」分不清） */
+  .trow.preview:not(.sel) { box-shadow: inset 0 0 0 1px var(--accent); }
+  .trow .tw {
+    flex: none; width: 16px; height: 20px; line-height: 20px; text-align: center;
+    color: var(--fg-dim); font-size: 9px; cursor: pointer; border-radius: 3px;
+  }
+  .trow .tw:hover { background: var(--btn-bg); color: var(--fg); }
+  .trow .tw.leaf { visibility: hidden; }
+  .trow .fico { flex: none; width: 17px; text-align: center; font-size: 13px; }
+  .trow .nm { overflow: hidden; text-overflow: ellipsis; }
+  .trow .cnt { margin-left: auto; padding: 0 6px 0 4px; color: var(--cnt); font-size: 12px; font-weight: 700; flex: none; }
+  .trow .cnt.zero { color: var(--cnt-zero); font-weight: 400; }
+  .trow .cnt.deep { color: var(--cnt-deep); font-weight: 400; font-size: 11px; }   /* ↳N：這層沒有，要點進子資料夾才看得到 → 反灰 */
+  .trow .star {
+    flex: none; width: 18px; text-align: center; font-size: 12px; color: var(--star);
+    visibility: hidden; cursor: pointer;
+  }
+  .trow:hover .star { visibility: visible; }
+  .trow .star.on { color: var(--star-on); visibility: visible; }
+  .trow .ai { color: var(--ai); font-size: 10px; flex: none; padding-right: 2px; }
+  #treeHint { padding: 8px 12px; color: var(--fg-dim); font-size: 12px; }
+  /* AI 對話區列：日期、agent 標籤（Claude/Codex）、顯示更多 */
+  .trow .cdate { flex: none; min-width: 38px; color: var(--fg-dim); font-size: 11px; }
+  .trow .atag { flex: none; font-size: 10px; line-height: 14px; padding: 0 5px; margin-left: 4px;
+    border-radius: 8px; border: 1px solid var(--ai); color: var(--ai); }
+  .trow.more .nm { color: var(--fg-dim); }
+  .trow.more .fico { color: var(--fg-dim); }
+  .crow.auto .nm, .crow.auto .cdate { opacity: .62; }
+  .crow.more .nm { color: var(--fg-dim); font-size: 12px; }
+  .crow-empty { padding: 4px 12px; color: var(--fg-dim); font-size: 12px; }
+
+  #splitter {
+    position: fixed; top: 44px; bottom: 0; width: 7px; z-index: 14; cursor: col-resize;
+    left: 33.33%; margin-left: -7px;   /* JS 以 right 邊對齊樹右緣＝WebGL 視區左緣 */
+  }
+  #splitter:hover, #splitter.drag { background: var(--accent-soft); }
+  body:not(.mode-twocol) #splitter { display: none; }
+  /* 左欄收合時樹寬 0：分隔線改貼齊畫面左緣，還抓得到（往右拖就展開） */
+  body.tree-collapsed #splitter { margin-left: 0; }
+
+  /* 第二條分隔線：檔案堆｜閱讀面板（僅三欄；拖到 ≥右區90% 會切 2/3 模式被藏掉） */
+  #splitter2 {
+    position: fixed; top: 44px; bottom: 0; width: 7px; z-index: 39; cursor: col-resize;
+    left: 66.66%; margin-left: -7px; display: none;
+  }
+  body.mode-threecol #splitter2 { display: block; }
+  #splitter2:hover, #splitter2.drag { background: var(--accent-soft); }
+  /* 拖動中：不選取內容、iframe（pdf/html 預覽）不吃滑鼠、游標全域 col-resize */
+  body.dragging, body.dragging * { user-select: none !important; cursor: col-resize !important; }
+  body.dragging iframe { pointer-events: none; }
+
+  /* 張數指示器（位置由 stack.js tick 推到堆視區右上角，避開右下的調參按鈕） */
+  #stackCount {
+    position: fixed; top: 52px; z-index: 11; color: var(--fg-dim); font-size: 12px;
+    user-select: none; pointer-events: none; transform: translateX(-100%);
+    white-space: nowrap;
+  }
+
+  /* ------------------------------------------------ reader panel（閱讀排版：行高 1.7、字 15px） */
+  #reader {
+    position: fixed; z-index: 40; top: 54px; bottom: 16px; left: 70%; width: 28%;
+    background: var(--panel-bg); color: var(--panel-fg); border-radius: 10px;
+    box-shadow: 0 18px 60px var(--shadow); display: none; flex-direction: column;
+    opacity: 0; transition: opacity 0.2s ease; overflow: hidden;
+    border: 1px solid var(--panel-border);
+  }
+  #reader.open { display: flex; }
+  #reader.show { opacity: 1; }
+  #readerHeader {
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px; flex: none;
+    background: var(--panel-head); border-bottom: 1px solid var(--panel-border); user-select: none;
+  }
+  #readerKind { font-size: 11px; color: #fff; border-radius: 4px; padding: 2px 7px;
+    background: #888; flex: none; }
+  #readerTitle { font-weight: 650; overflow: hidden; white-space: nowrap;
+    text-overflow: ellipsis; min-width: 52px; color: var(--heading); }
+  #readerBtns button { padding: 0 5px; }
+  #readerMeta { color: var(--panel-dim); font-size: 12px; flex: none; }
+  #readerBtns { margin-left: auto; display: flex; gap: 4px; flex: none; }
+  #readerBtns button {
+    border: 0; background: var(--btn-bg); color: var(--btn-fg); min-width: 27px; height: 26px;
+    border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 6px;
+  }
+  #readerBtns button:hover { background: var(--btn-hover); }
+  #readerBtns button:disabled { opacity: .45; cursor: default; }
+
+  /* ------------------------------------------------ 改版模式（iframe＋改動清單） */
+  #readerBody.revise { padding: 0; overflow: hidden; display: flex; }
+  #reviseWrap { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+  #reviseBar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+    padding: 5px 8px; background: var(--panel-head); border-bottom: 1px solid var(--panel-border); }
+  #reviseBar button { border: 1px solid var(--input-border); background: var(--input-bg); color: var(--fg);
+    border-radius: 6px; padding: 3px 9px; font-size: 13px; line-height: 20px; cursor: pointer; }
+  #reviseBar button:hover { border-color: var(--accent); }
+  #reviseBar button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  #reviseBar button:disabled { opacity: .5; cursor: default; }
+  #reviseSel { color: var(--panel-dim); font: 12px Consolas, monospace; }
+  #reviseMain { flex: 1; display: flex; min-height: 0; }
+  #reviseFrameBox { flex: 1; min-width: 0; background: #fff; }
+  #reviseFrame { width: 100%; height: 100%; border: 0; display: block; }
+  #reviseList { flex: none; width: 34%; max-width: 260px; min-width: 150px; overflow: auto;
+    border-left: 1px solid var(--panel-border); background: var(--panel-bg); font-size: 13px; }
+  #reviseList .rv-head { padding: 6px 9px; font-weight: 650; border-bottom: 1px solid var(--panel-border);
+    position: sticky; top: 0; background: var(--panel-head); }
+  #reviseList .rv-head .n { color: var(--accent); }
+  #reviseList ol { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 5px; }
+  #reviseList li { display: grid; grid-template-columns: 20px 1fr auto; gap: 4px; align-items: start;
+    padding: 5px 6px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--input-bg); }
+  #reviseList li .num { color: var(--accent); font-weight: 700; grid-row: 1; }
+  #reviseList li .desc { word-break: break-word; line-height: 1.45; grid-row: 1; }
+  #reviseList li .note-edit { grid-column: 1 / 4; grid-row: 2; width: 100%; align-self: start;
+    box-sizing: border-box; resize: vertical; height: 38px; min-height: 24px;
+    background: var(--panel-bg); color: var(--fg); border: 1px solid var(--input-border); border-radius: 5px;
+    font-family: inherit; font-size: 12px; line-height: 1.4; padding: 3px 5px; }
+  #reviseList li .del { grid-column: 3; grid-row: 1; border: 0; background: transparent; color: var(--panel-dim);
+    cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 3px; }
+  #reviseList li .del:hover { color: #e05656; }
+  #reviseList .rv-empty { padding: 10px; color: var(--panel-dim); line-height: 1.5; }
+  #reviseList .rv-empty[hidden] { display: none; }
+
+  /* ---- 編輯／查找的控制：全部是看得到的按鈕，tooltip 寫出快捷鍵 ---- */
+  #readerTitle.dirty::after { content: ' ●'; color: var(--accent); }
+  #findBar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+    padding: 6px 10px; background: var(--panel-head); border-bottom: 1px solid var(--panel-border); }
+  #findBar[hidden] { display: none; }
+  #findBar input { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
+    border-radius: 6px; padding: 3px 8px; font-size: 12.5px; }
+  #findBar .fq { flex: 1; min-width: 90px; }
+  #findBar .fc { font-size: 12px; color: var(--panel-dim); min-width: 62px; text-align: center; }
+  #findBar button { border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--btn-fg);
+    border-radius: 6px; padding: 2px 7px; cursor: pointer; font-size: 12px; line-height: 18px; }
+  #findBar button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #findBar .frep-row { display: flex; gap: 5px; width: 100%; }
+  #findBar .frep-row[hidden] { display: none; }
+  #findBar .frep { flex: 1; min-width: 80px; }
+  #findBar mark.fhit { background: #f3d36b; color: #241e16; }
+  #findBar mark.fhit.cur, #readerBody mark.fhit.cur { outline: 2px solid var(--accent); }
+
+  /* 編輯器：等寬字＋行號槽；配色沿用 codetheme（--cv-* 變數由 codetheme 注入） */
+  #readerBody.edit { padding: 0; overflow: hidden; }
+  #readerBody .editview { display: flex; height: 100%; background: var(--cv-bg, var(--code-bg)); }
+  #readerBody .ev-gutter { flex: none; overflow: hidden; padding: 10px 10px 10px 12px; text-align: right;
+    color: var(--cv-gutter, var(--panel-dim)); background: var(--cv-bg, var(--code-bg)); white-space: pre;
+    font: 13px/21px Consolas, "Cascadia Mono", monospace; user-select: none;
+    border-right: 1px solid var(--panel-border); }
+  #readerBody .ev-editor { flex: 1; overflow: auto; padding: 10px 14px; outline: none; white-space: pre;
+    tab-size: 2; color: var(--cv-fg, var(--panel-fg)); background: var(--cv-bg, var(--code-bg));
+    font: 13px/21px Consolas, "Cascadia Mono", monospace; }
+  #readerBody .ev-editor mark.fhit { background: #f3d36b; color: #241e16; }
+
+  /* 衝突對話框（磁碟上的檔被別人改過） */
+  #editConflict { position: fixed; inset: 0; z-index: 78; display: none; align-items: center;
+    justify-content: center; background: rgba(0,0,0,0.4); }
+  #editConflict.on { display: flex; }
+  #editConflict .box { width: min(640px, 92vw); max-height: 82vh; display: flex; flex-direction: column;
+    background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 16px 18px; box-shadow: 0 18px 60px var(--shadow); }
+  #editConflict .ttl { font-weight: 650; color: var(--heading); margin-bottom: 6px; }
+  #editConflict .msg { font-size: 13px; color: var(--panel-dim); margin-bottom: 10px; line-height: 1.6; }
+  #editConflict .diff { display: none; flex: 1; min-height: 60px; overflow: auto; margin-bottom: 10px;
+    border: 1px solid var(--panel-border); border-radius: 8px; padding: 8px 10px;
+    font: 12px/1.6 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #editConflict .diff.on { display: block; }
+  #editConflict .df-stat { color: var(--panel-dim); margin-bottom: 4px; }
+  #editConflict .df-l.add { color: var(--ai); }
+  #editConflict .df-l.del { color: var(--err); }
+  #editConflict .btns { display: flex; justify-content: flex-end; gap: 8px; }
+  #editConflict button { border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--btn-fg);
+    border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 13px; }
+  #editConflict button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #editConflict button.danger { border-color: var(--err); color: var(--err); }
+
+  /* 未存離開提示條（頁內，不用原生 alert） */
+  #editGuard { position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 3; display: none;
+    align-items: center; gap: 8px; padding: 8px 12px; border-radius: 9px; font-size: 13px;
+    background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--accent);
+    box-shadow: 0 10px 30px var(--shadow); }
+  #editGuard.on { display: flex; }
+  #editGuard .g { flex: 1; }
+  #editGuard button { border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--btn-fg);
+    border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+  #editGuard button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #readerSecret { display: none; flex: none; padding: 8px 12px; font-size: 12.5px; line-height: 1.5;
+    color: var(--fg); background: rgba(224, 162, 74, 0.14); border-bottom: 1px solid var(--panel-border); }
+  #readerSecret.on { display: block; }
+  /* HTML 預覽提示條：檔案內容靠程式畫的，告訴使用者按 ▶ 執行 */
+  #readerScriptHint { display: none; flex: none; padding: 8px 12px; font-size: 12.5px; line-height: 1.5;
+    color: var(--fg); background: var(--accent-soft); border-bottom: 1px solid var(--panel-border); }
+  #readerScriptHint.on { display: block; }
+  #readerBtns button.on { background: var(--accent); color: var(--accent-fg); }
+  #readerSecret .hits { margin-top: 3px; color: var(--panel-dim); font-size: 12px; overflow-wrap: anywhere; }
+  #readerBody { flex: 1; overflow: auto; padding: 18px 24px; font-size: 15px; line-height: 1.7; }
+  #readerBody h1, #readerBody h2, #readerBody h3, #readerBody h4 { color: var(--heading); line-height: 1.35; }
+  #readerBody a { color: var(--link); }
+  #readerBody pre { background: var(--code-bg); border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 12px; overflow: auto; font-size: 13px; line-height: 1.5; }
+  #readerBody table { border-collapse: collapse; font-size: 13px; }
+  #readerBody td, #readerBody th { border: 1px solid var(--panel-border); padding: 4px 8px;
+    max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #readerBody th { background: var(--panel-head); color: var(--heading); }
+  #readerBody blockquote { margin: 0.6em 0; padding: 0.2em 1em; border-left: 3px solid var(--panel-border); color: var(--panel-dim); }
+  #readerBody hr { border: 0; border-top: 1px solid var(--panel-border); }
+  #readerBody img.reader-img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  #readerBody iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+  #readerBody.md h1, #readerBody.md h2 { border-bottom: 1px solid var(--panel-border); padding-bottom: 4px; }
+  #readerBody code { background: var(--code-bg); border-radius: 4px; padding: 1px 4px; }
+  #readerBody pre code { background: none; padding: 0; }
+  #readerBody .msg-dim { color: var(--panel-dim); }
+  #readerBody .msg-err { color: var(--err); }
+
+  /* Obsidian 風格：frontmatter 屬性盒 / wikilink / callout / #tag 膠囊 */
+  #readerBody .obs-fm { border: 1px solid var(--panel-border); border-radius: 8px;
+    background: var(--panel-head); padding: 8px 12px; margin: 0 0 14px; font-size: 13px; line-height: 1.55; }
+  #readerBody details.obs-fm { padding: 6px 12px; }
+  #readerBody .obs-fm summary { cursor: pointer; color: var(--panel-dim); user-select: none; }
+  #readerBody .obs-fm-row { display: flex; gap: 10px; margin: 2px 0; }
+  #readerBody .obs-fm-key { color: var(--panel-dim); flex: none; min-width: 96px; }
+  #readerBody .obs-fm-vals { min-width: 0; overflow-wrap: anywhere; }
+  #readerBody .obs-fm-pill, #readerBody .obs-tag { display: inline-block; border: 1px solid var(--panel-border);
+    background: var(--code-bg); color: var(--panel-dim); border-radius: 999px;
+    padding: 0 8px; margin: 1px 2px; font-size: 12px; line-height: 1.7; }
+  #readerBody a.obs-wikilink { text-decoration: none; border-bottom: 1px dashed var(--accent); cursor: pointer; }
+  #readerBody a.obs-wikilink:hover { border-bottom-style: solid; }
+  #readerBody a.obs-wikilink.obs-resolving { opacity: .55; }
+  #readerBody .obs-missing { color: var(--panel-dim); font-size: 12px; overflow-wrap: anywhere;
+    border: 1px dashed var(--panel-border); border-radius: 6px; padding: 0 6px; margin-left: 4px; }
+  #readerBody .obs-callout { border-left-color: var(--accent); border-radius: 0 8px 8px 0;
+    background: var(--panel-head);   /* color-mix 不支援時的底色 */
+    background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 8px 14px; color: var(--panel-fg); }
+  #readerBody .obs-callout-title { font-weight: 700; color: var(--accent); margin-bottom: 2px; }
+  #readerBody img.obs-embed { max-width: 100%; height: auto; }
+
+  /* 首次使用的操作提示卡（看過就不再出現；設定 ⚙ 裡隨時可看） */
+  #hint { position: fixed; z-index: 46; bottom: 64px; display: none; width: min(460px, 60vw);
+    transform: translateX(-50%); padding: 12px 16px; border-radius: 10px; font-size: 13px;
+    background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--panel-border);
+    box-shadow: 0 14px 40px var(--shadow); }
+  #hint.on { display: block; }
+  #hint .ttl { font-weight: 650; color: var(--heading); margin-bottom: 4px; }
+  #hint .foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; color: var(--panel-dim); font-size: 12px; }
+  #hint .foot button { margin-left: auto; border: 0; background: var(--accent); color: var(--accent-fg);
+    border-radius: 6px; padding: 4px 14px; cursor: pointer; font-size: 12px; }
+  ul.help { margin: 0; padding-left: 18px; line-height: 1.65; }
+
+  /* 設定面板（⚙）：不常動的東西都收在這 */
+  #settings { position: fixed; z-index: 55; top: 48px; right: 10px; width: 330px; display: none;
+    max-height: calc(100vh - 64px); overflow: auto; box-sizing: border-box; padding: 6px 14px 12px;
+    background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--panel-border);
+    border-radius: 10px; box-shadow: 0 18px 50px var(--shadow); font-size: 13px; }
+  #settings.on { display: block; }
+  #settings .sgrp { padding: 9px 0; border-bottom: 1px solid var(--panel-border); }
+  #settings .sgrp:last-child { border-bottom: 0; }
+  #settings .slab { font-size: 11px; color: var(--panel-dim); letter-spacing: 1px; margin-bottom: 6px; }
+  #settings .seg { display: flex; gap: 6px; }
+  #settings .seg button { flex: 1; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--fg);
+    border-radius: 6px; padding: 5px 8px; cursor: pointer; font-size: 12px; }
+  #settings .seg button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #settings #fontSel, #settings #codeThemeSel { width: 100%; max-width: none; }
+  #settings #codeThemeSel { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
+    border-radius: 6px; padding: 4px 6px; font-size: 12px; cursor: pointer; }
+  .cts-swatch { margin-top: 6px; border-radius: 6px; border: 1px solid var(--input-border);
+    padding: 3px 10px; display: flex; gap: 12px; font: 11px Consolas, monospace; }
+  #readerBtns #codeThemeMini { border: 0; background: var(--btn-bg); color: var(--btn-fg);
+    height: 26px; border-radius: 6px; font-size: 11px; max-width: 118px; cursor: pointer; }
+  #settings .help { font-size: 12px; }
+  #settings .again { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--panel-dim); cursor: pointer; }
+  #settings .idxnote { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--panel-dim); }
+  #settings #projPerm { margin-top: 8px; border: 1px solid var(--input-border); background: var(--input-bg);
+    color: var(--fg); border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+  #settings #projPerm:disabled { opacity: .5; cursor: default; }
+
+  /* 投影（project.js）：左欄「AI 最近給我的」＋閱讀區的跳行提示線 */
+  #projRecent .proj-row .fico { opacity: .8; }
+  /* AI 整理的疊（pile）：左欄一列一疊，標題＋檔數＋時間 */
+  #projPiles .pile-row .fico { opacity: .8; }
+  #projPiles .pile-row .cnt { margin-left: auto; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+  #projPiles .pile-row .pile-when { color: var(--fg-faint); font-size: 11px; }
+  #pathBar .pile-back { flex: none; border: 1px solid var(--border); background: var(--bar); color: var(--fg-dim);
+    border-radius: 6px; padding: 1px 8px; cursor: pointer; font-size: 12px; }
+  #pathBar .pile-back:hover { color: var(--fg); border-color: var(--accent); }
+  #readerBody { position: relative; }
+  #readerBody .proj-line { position: absolute; left: 0; right: 0; height: 0;
+    border-top: 2px solid var(--accent); opacity: .7; pointer-events: none; }
+
+  /* 快速跳轉捲軸（scrub.js）：檔案多時出現在卡堆右側 */
+  #scrub { position: fixed; z-index: 12; width: 14px; }
+  #scrub .track { position: absolute; inset: 0; cursor: ns-resize; border-radius: 7px; }
+  #scrub .track::before { content: ''; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px;
+    background: var(--fg-faint); border-radius: 1px; opacity: .55; }
+  #scrub .thumb { position: absolute; left: 2px; width: 10px; height: 28px; border-radius: 5px;
+    background: var(--fg-dim); opacity: .7; pointer-events: none; }
+  #scrub:hover .thumb, #scrub.drag .thumb { background: var(--accent); opacity: 1; }
+  #scrub .tip { position: absolute; right: 22px; display: none; white-space: nowrap; max-width: 46vw;
+    overflow: hidden; text-overflow: ellipsis; padding: 3px 9px; border-radius: 6px; font-size: 12px;
+    background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--panel-border);
+    box-shadow: 0 6px 18px var(--shadow); pointer-events: none; }
+  #scrub .tip.on { display: block; }
+  /* 完整路徑列：卡堆左上角；每一段可點跳到那一層，太長就換行，不截斷 */
+  #pathBar { position: fixed; top: 52px; z-index: 11; display: none; align-items: flex-start; gap: 6px;
+    font-size: 12px; color: var(--fg-dim); }
+  #pathBar.on { display: flex; }
+  #pathBar .crumbs { display: flex; flex-wrap: wrap; align-items: center; row-gap: 2px; min-width: 0;
+    background: var(--bar); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
+  #pathBar .seg { cursor: pointer; padding: 0 2px; border-radius: 3px; word-break: break-all; }
+  #pathBar .seg:hover { color: var(--fg); background: var(--hover); }
+  #pathBar .seg.last { color: var(--fg); font-weight: 600; }
+  #pathBar .sep { color: var(--fg-faint); padding: 0 1px; }
+  #pathBar .copy { flex: none; border: 1px solid var(--border); background: var(--bar); color: var(--fg-dim);
+    border-radius: 6px; padding: 1px 7px; cursor: pointer; font-size: 12px; }
+  #pathBar .copy:hover { color: var(--fg); border-color: var(--accent); }
+
+  /* ------------------------------------------------ params panel */
+  #params { position: fixed; right: 10px; bottom: 10px; z-index: 25; font-size: 12px;
+    color: var(--fg); text-align: right; user-select: none; }
+  #paramsToggle { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  #paramsBody { display: none; margin-top: 6px; background: var(--bar);
+    border: 1px solid var(--input-border); border-radius: 8px; padding: 8px 10px; }
+  #params.open #paramsBody { display: block; }
+  .p-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+  .p-row span { width: 110px; text-align: right; }
+  .p-row input { width: 110px; }
+  .p-row em { width: 48px; font-style: normal; text-align: left; color: var(--fg-dim); }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+  integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+  crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"
+  integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a"
+  crossorigin="anonymous"></script>
+<script defer src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"
+  integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT"
+  crossorigin="anonymous"></script>
+<!-- 程式碼上色：本機 vendored highlight.js 11.9.0（離線可用；BSD-3，授權標頭在檔頭） -->
+<script defer src="/vendor/highlight.min.js"></script>
+<script defer src="/vendor/languages-powershell.min.js"></script>
+<script defer src="/vendor/languages-dockerfile.min.js"></script>
+</head>
+<body class="mode-twocol">
+<canvas id="gl"></canvas>
+
+<div id="toolbar">
+  <span class="brand" data-i18n="brand">3D 檔案瀏覽器</span>
+  <input id="searchBox" type="search" data-i18n-ph="searchPh" placeholder="過濾目前資料夾檔名…">
+  <div id="chips"></div>
+  <select id="sortSel" data-i18n-title="sortTitle"></select>
+  <span id="status" data-i18n="loading">載入中…</span>
+  <button id="btnTree" class="tbtn" data-i18n-title="treeHideTitle">◧</button>
+  <button id="btnFull" class="tbtn" data-i18n-title="fullTitle">⛶</button>
+  <button id="btnUndoTop" class="tbtn" data-i18n-title="undoTitle">↶</button>
+  <button id="btnSelAll" class="tbtn" aria-pressed="false" aria-label="全選">▣</button>
+  <button id="btnRefresh" class="tbtn" data-i18n-title="refreshTitle">⟳</button>
+  <button id="btnSettings" class="tbtn" data-i18n-title="setTitle">⚙</button>
+</div>
+
+<div id="settings">
+  <div class="sgrp"><div class="slab" data-i18n="setTheme"></div>
+    <div class="seg"><button id="btnThemeLight" data-i18n="themeLight"></button><button id="btnThemeDark" data-i18n="themeDark"></button></div></div>
+  <div class="sgrp"><div class="slab" data-i18n="setFont"></div>
+    <select id="fontSel" data-i18n-title="fontTitle"></select></div>
+  <div class="sgrp"><div class="slab" data-i18n="setLang"></div>
+    <div class="seg"><button id="btnLangZh">中文</button><button id="btnLangEn">English</button></div></div>
+  <div class="sgrp"><div class="slab" data-i18n="setCodeTheme"></div>
+    <select id="codeThemeSel" data-i18n-title="codeThemeTitle"></select>
+    <div class="cts-swatch" id="codeThemeSwatch" aria-hidden="true"></div></div>
+  <div class="sgrp"><div class="slab" data-i18n="setHtmlSlab"></div>
+    <label class="again"><input type="checkbox" id="htmlRun"> <span data-i18n="setHtmlRun"></span></label>
+    <div class="idxnote" data-i18n="setHtmlRunNote"></div></div>
+  <div class="sgrp"><div class="slab" data-i18n="setIndexSlab"></div>
+    <label class="again"><input type="checkbox" id="idxContent"> <span data-i18n="setIndexContent"></span></label>
+    <div class="idxnote" id="idxNote"></div></div>
+  <div class="sgrp"><div class="slab" data-i18n="setProjSlab"></div>
+    <label class="again"><input type="checkbox" id="projNotify"> <span data-i18n="setProjNotify"></span></label>
+    <label class="again"><input type="checkbox" id="projSound"> <span data-i18n="setProjSound"></span></label>
+    <label class="again"><input type="checkbox" id="projFront"> <span data-i18n="setProjFront"></span></label>
+    <button id="projPerm" data-i18n="setProjPerm"></button>
+    <div class="idxnote" id="projPermNote"></div></div>
+  <div class="sgrp"><div class="slab" data-i18n="setHelp"></div>
+    <ul class="help"></ul>
+    <label class="again"><input type="checkbox" id="tipAgain"> <span data-i18n="setTipAgain"></span></label></div>
+</div>
+
+<div id="pathBar"><span class="crumbs"></span><button class="copy" data-i18n-title="pathCopy">⧉</button></div>
+
+<aside id="tree"></aside>
+<div id="splitter" data-i18n-title="splitter" title="拖拉調整樹寬（雙擊回預設）"></div>
+<div id="splitter2" data-i18n-title="splitter2" title="拖拉調整閱讀面板寬（雙擊回預設；拉到頭變 2/3）"></div>
+
+<div id="reader">
+  <div id="readerHeader">
+    <span id="readerKind">md</span>
+    <span id="readerTitle">—</span>
+    <span id="readerMeta"></span>
+    <div id="readerBtns">
+      <button id="btnFind" data-i18n-title="findTitle">🔍</button>
+      <button id="btnEdit" data-i18n-title="editTitle">✎</button>
+      <button id="btnSave" hidden data-i18n-title="saveTitle">💾</button>
+      <button id="btnSaveExit" hidden data-i18n-title="saveExitTitle">✔</button>
+      <button id="btnCancelEdit" hidden data-i18n-title="cancelEditTitle">⊘</button>
+      <button id="btnMdPreview" hidden data-i18n-title="mdPreviewTitle">👁</button>
+      <!-- 這兩顆按鈕的文案跟狀態走（執行中↔預覽），由 reader.js syncHtmlButtons 設定；不掛 data-i18n，免得切語言時被蓋回預設字 -->
+      <button id="btnRun" hidden>▶ 執行網頁程式</button>
+      <button id="btnSource" hidden>&lt;/&gt; 原始碼</button>
+      <button id="btnRevise" hidden data-i18n-title="reviseTitle">✎ 改版</button>
+      <!-- 程式碼檢視的 two controls（配色＋換行）：只在程式碼／JSON／HTML 原始碼打開時出現，由 codetheme.js 控制 -->
+      <select id="codeThemeMini" hidden data-i18n-title="codeThemeTitle"></select>
+      <button id="btnWrap" hidden data-i18n-title="wrapTitle">↩</button>
+      <button id="btnMore" data-i18n-title="moreTitle">⋯</button>
+      <button id="btnSize" title="切換閱讀區大小：1/3 → 2/3 → 全螢幕 → 1/3">1/3</button>
+      <button id="btnClose" data-i18n-title="closeTitle" title="放回（Esc）">✕</button>
+    </div>
+  </div>
+  <div id="findBar" hidden>
+    <input class="fq" type="search" data-i18n-ph="findPh" placeholder="查找…">
+    <span class="fc" role="status" aria-live="polite"></span>
+    <button class="fup" data-i18n-title="findPrevTitle">↑</button>
+    <button class="fdown" data-i18n-title="findNextTitle">↓</button>
+    <button class="fcase" data-i18n-title="findCaseTitle">Aa</button>
+    <button class="fclose" data-i18n-title="findCloseTitle">✕</button>
+    <div class="frep-row" hidden>
+      <input class="frep" data-i18n-ph="replacePh" placeholder="取代成…">
+      <button class="frep1" data-i18n-title="replaceOneTitle" data-i18n="replaceOne"></button>
+      <button class="frepall" data-i18n-title="replaceAllTitle" data-i18n="replaceAll"></button>
+    </div>
+  </div>
+  <div id="readerSecret"></div>
+  <div id="readerScriptHint" role="status" aria-live="polite"></div>
+  <div id="readerBody"></div>
+  <div id="editGuard" role="alert">
+    <span class="g" data-i18n="guardMsg"></span>
+    <button class="primary" data-c="save" data-i18n="guardSave"></button>
+    <button data-c="drop" data-i18n="guardDrop"></button>
+    <button data-c="stay" data-i18n="guardStay"></button>
+  </div>
+</div>
+
+<div id="viewBar">
+  <button id="btnViewHome" data-i18n="viewHome" data-i18n-title="viewHomeTitle"></button>
+  <button id="btnViewFav" data-i18n="viewFav" data-i18n-title="viewFavTitle"></button>
+  <button id="btnViewSave" data-i18n="viewSave" data-i18n-title="viewSaveTitle"></button>
+</div>
+<div id="toast"></div>
+<div id="selBar"><span class="n"></span><button data-act="copy"></button><button data-act="trash" class="danger"></button><button data-act="all"></button><button data-act="clear"></button><span class="hint"></span></div>
+<div id="editConflict" role="dialog" aria-modal="true">
+  <div class="box">
+    <div class="ttl"></div>
+    <p class="msg" data-i18n="conflictMsg"></p>
+    <div class="diff"></div>
+    <div class="btns">
+      <button data-c="diff" data-i18n="conflictDiff"></button>
+      <button data-c="drop" data-i18n="conflictReload"></button>
+      <button data-c="overwrite" class="primary" data-i18n="conflictOverwrite"></button>
+    </div>
+  </div>
+</div>
+<div id="ctxMenu" role="menu"></div>
+<div id="dlg"><div class="box"><div class="ttl"></div><div class="body"></div><input class="inp" type="text"><div class="btns"><button class="no"></button><button class="yes"></button></div></div></div>
+<div id="hint"><div class="ttl" data-i18n="tipTitle"></div><ul class="help"></ul>
+  <div class="foot"><span data-i18n="tipMore"></span><button data-i18n="tipClose"></button></div></div>
+
+<script type="module" src="/main.js"></script>
+</body>
+</html>
