@@ -101,7 +101,7 @@ A ready-made skill that teaches an agent this loop lives in [`skills/riffledesk/
 
 ## Compatibility
 
-Chromium, Firefox and Safari — the last two latest versions. The card stack needs WebGL; on a machine without it, RiffleDesk shows a notice card instead of the stack (the tree, search and the reader stay usable, and files still open). If the context is lost mid-session — a graphics driver reset — the same notice covers the card column and offers a reload. There is no 2D fallback, so a stale `?flat=1` bookmark still works but changes nothing. The server is POSIX and Windows; trash-undo and the file-manager reveal are Windows-specific.
+Chromium, Firefox and Safari — the last two latest versions. The card stack needs WebGL; on a machine without it, RiffleDesk shows a notice card instead of the stack (the tree, search, reading and editing stay usable, and files still open). If the context is lost mid-session — a graphics driver reset — the same notice covers the card column and offers a reload. There is no 2D fallback, so a stale `?flat=1` bookmark still works but changes nothing. The server is POSIX and Windows; trash-undo and the file-manager reveal are Windows-specific.
 
 ## Configuration
 

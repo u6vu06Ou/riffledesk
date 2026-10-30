@@ -43,55 +43,96 @@ function dominantEol(text) {
   if (!crlf && !lf) return null;            // no newlines at all → nothing to preserve
   return crlf > lf ? '\r\n' : '\n';
 }
+let spinWarned = false;
 function syncSleepMs(ms) { // writeAtomic retry pause (no async needed inside it)
+  // Node 主執行緒一定有 Atomics.wait；這個後備是給建不出 SharedArrayBuffer 的環境
+  // （非 crossOriginIsolated 的 renderer）。忙等會吃掉整顆核，記一次讓它可觀測。
   try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); return; } catch (_) {}
-  const end = Date.now() + ms;   // 沒有 Atomics 的環境（少數 renderer）就忙等，別讓重試退化成空轉
+  if (!spinWarned) { spinWarned = true; console.warn('[fileops] Atomics.wait unavailable — retry pauses spin-wait'); }
+  const end = Date.now() + ms;
   while (Date.now() < end) { /* spin */ }
 }
-// temp file in the SAME directory (same volume → rename is atomic), rename over
-// the target. The rename is best-effort on win32: the target can be held open for
-// a moment by the indexer, a thumbnail read or AV (a file that was just written
-// sits in the Defender scan queue), so a transient lock is retried for ~2 s and,
-// if it outlasts that, the target is overwritten in place instead — that write is
-// not atomic, but the previous bytes are restored if it fails, which beats
-// handing the editor a 500 and losing the edit.
+
+// 寫一個檔：temp 檔放同一個資料夾（同磁碟區，rename 才可能是原子操作）再 rename 蓋過去。
+// win32 上目標常被索引器／縮圖讀取／防毒短暫鎖住（剛寫過的檔會進 Defender 掃描佇列），
+// 所以 transient 鎖會重試約 2 秒（**這段是同步的，會擋住 event loop 約 2 秒**，寫入端是低頻
+// 路徑，換取呼叫端不用全部改成 async）。真的鎖過 2 秒就退回「原地覆寫」：先讀回舊位元組當
+// 快照，直接寫目標檔，失敗就寫回快照。這條路不具原子性（並行讀者可能讀到半截），也跟隨
+// symlink 覆寫其目標（rename 則是換掉連結本身）；但那比直接回 500、讓編輯白打還好。
+// 快照讀不回來（同一個鎖、或檔案剛被刪）就照樣寫，錯誤訊息會講明有沒有快照、還原有沒有成功。
 const RENAME_RETRIES = 20;   // × RENAME_RETRY_MS ≈ 2 s
 const RENAME_RETRY_MS = 100;
-const TRANSIENT_WRITE = new Set(['EBUSY', 'EPERM', 'EACCES']);   // one predicate for retry AND fallback
-function busyWriteInPlace(abs, buf) {
-  let prev = null;
-  try { prev = fs.readFileSync(abs); } catch (_) { prev = null; }
+const TRANSIENT_WRITE = new Set(['EBUSY', 'EPERM', 'EACCES']);   // 同一組判斷兼作重試與後備條件
+const TMP_RE = /^\.rdtmp-/;
+const TMP_STALE_MS = 60 * 60 * 1000;
+
+function writeDurable(p, buf) {   // 寫完 fsync：不然「原子」只擋得住行程死掉，擋不住斷電
+  const fd = fs.openSync(p, 'w');
+  try { fs.writeSync(fd, buf); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+// 清掉本目錄裡放太久的 .rdtmp-*（只有後備也失敗時才會留下來）。失敗一律忽略。
+// 每寫一次都 readdir 太貴（大資料夾），每個目錄最多 10 分鐘掃一次。
+const sweepAt = new Map();
+function sweepStaleTemps(dir) {
+  const now = Date.now();
+  const last = sweepAt.get(dir);
+  if (last && now - last < 10 * 60 * 1000) return;
+  if (sweepAt.size > 200) sweepAt.clear();
+  sweepAt.set(dir, now);
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_) { return; }
+  const cut = now - TMP_STALE_MS;
+  for (const n of names) {
+    if (!TMP_RE.test(n)) continue;
+    const p = path.join(dir, n);
+    try { if (fs.statSync(p).mtimeMs < cut) fs.unlinkSync(p); } catch (_) {}
+  }
+}
+
+function overwriteInPlace(abs, buf, renameErr, tries, tmp) {
+  let prev = null, snapErr = null;
+  try { prev = fs.readFileSync(abs); } catch (err) { snapErr = err; }
+  const note = prev ? `previous ${prev.length} bytes snapshotted`
+    : `no snapshot (${snapErr && snapErr.code === 'ENOENT' ? 'target missing' : 'read failed: ' + (snapErr && snapErr.message)})`;
+  let writeErr;
   try {
     fs.writeFileSync(abs, buf);
   } catch (err) {
-    if (prev) { try { fs.writeFileSync(abs, prev); } catch (_) {} }   // 半截檔比舊內容更糟：能還原就還原
-    throw err;
+    writeErr = err;
   }
+  if (!writeErr) { try { fs.unlinkSync(tmp); } catch (_) {} return; }
+  let restored;
+  if (!prev) restored = 'nothing to restore';
+  else {
+    try { fs.writeFileSync(abs, prev); restored = 'previous bytes restored'; }
+    catch (err2) { restored = 'RESTORE ALSO FAILED: ' + err2.message; }
+  }
+  throw new Error('rename into place failed after ' + tries + ' tries: ' + renameErr.message +
+    '; in-place write failed: ' + writeErr.message + ' [' + note + ', ' + restored +
+    '] (temp with the new content kept at ' + tmp + ')');
 }
+
 function writeAtomic(abs, buf) {
   const dir = path.dirname(abs);
   const tmp = path.join(dir, '.rdtmp-' + process.pid.toString(36) + '-' +
     Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) + '.tmp');
-  try { fs.writeFileSync(tmp, buf); } catch (err) {
+  try { writeDurable(tmp, buf); } catch (err) {
+    try { fs.unlinkSync(tmp); } catch (_) {}
     throw new Error('write temp failed: ' + err.message);
   }
   for (let i = 1; ; i++) {
-    try { fs.renameSync(tmp, abs); break; } catch (err) {
+    try { fs.renameSync(tmp, abs); }
+    catch (err) {
       if (!IS_WIN || !TRANSIENT_WRITE.has(err.code)) {
         try { fs.unlinkSync(tmp); } catch (_) {}
         throw new Error('rename into place failed after ' + i + ' tries: ' + err.message);
       }
       if (i <= RENAME_RETRIES) { syncSleepMs(RENAME_RETRY_MS); continue; }
-      // 鎖撐過重試預算：改用原地覆寫（tmp 先留著，成功後才刪，失敗也還有它可查）
-      try {
-        busyWriteInPlace(abs, buf);
-      } catch (err2) {
-        throw new Error('rename into place failed after ' + i + ' tries: ' + err.message +
-          '; in-place write also failed: ' + err2.message + ' (temp kept at ' + tmp + ')');
-      }
-      try { fs.unlinkSync(tmp); } catch (_) {}
-      return;
+      overwriteInPlace(abs, buf, err, i, tmp);   // 拋錯時它自己會帶著診斷訊息
     }
+    sweepStaleTemps(dir);
+    return;
   }
 }
 

@@ -360,6 +360,29 @@ async function no3dCase(browser, base, tag, { shot = false } = {}) {
     ok(await page.waitForFunction(() => !!document.querySelector('#readerBody h1'), null, { timeout: 6000 })
       .then(() => true, () => false), `${tag} reader renders md`);
 
+    // 沒有 3D 也編輯得起來（README 說「樹、搜尋、閱讀仍可用」），存檔真的落到磁碟
+    await page.evaluate(() => __dbg.openFileByName('scratch.md'));
+    await page.waitForFunction(() => __dbg.panel().file === 'scratch.md', null, { timeout: 6000 });
+    await page.click('#btnEdit');
+    const WANT = '# scratch\n\nEDITED-NO3D\n';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await page.click('#readerBody .ev-editor');
+      await page.keyboard.press('Control+a');
+      await page.keyboard.type(WANT);
+      if ((await page.evaluate(() => document.querySelector('#readerBody .ev-editor').textContent))
+        .includes('EDITED-NO3D')) break;
+    }
+    await page.keyboard.press('Control+s');
+    let saved = '';
+    for (let i = 0; i < 25; i++) {
+      await sleep(200);
+      saved = fs.readFileSync(SCRATCH, 'utf8');
+      if (saved.includes('EDITED-NO3D')) break;
+    }
+    ok(saved.includes('EDITED-NO3D'), `${tag} editing + save still work`);
+    fs.writeFileSync(SCRATCH, SCRATCH_ORIG);
+    await page.evaluate(() => __dbg.closeReader());
+
     if (shot) {
       await page.evaluate(() => { __dbg.closeReader(); document.getElementById('toast').classList.remove('on'); });
       await sleep(2500);   // 等縮圖排程畫完一批
