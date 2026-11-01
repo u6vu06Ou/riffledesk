@@ -16,6 +16,7 @@ import { initProject, initProjectSettings, handleProject, handlePile, clickPileT
 import { TabsMode } from './tabs.js';
 import { TAB_X_ZONE, TAB_AI_ZONE, tabBadgeAt } from './thumbs.js';
 import { copyTabForAI } from './tabcopy.js';
+import { loadSharedPrefs, sharedPrefsNow, postSharedPrefs } from './prefs.js';
 
 const canvas = document.getElementById('gl');
 const treeEl = document.getElementById('tree');
@@ -29,6 +30,9 @@ const statusEl = document.getElementById('status');
 // 只有搜尋框＋類型下拉＋卡堆：沒有左欄樹；閱讀面板平時不參與版面，點檔案卡＝就地開整欄閱讀覆層。
 const PANEL = new URLSearchParams(location.search).get('mode') === 'panel';
 if (PANEL) document.body.classList.add('panel-mode');
+// 共享 prefs（server 那份）開機先抓：卡堆建構（讀「我的視角」）與下面的側欄縮放都要用它。
+// 抓不到就當空物件：各 surface 退回自己的 localStorage，行為跟以前一樣。
+await loadSharedPrefs();
 // ---- 側邊欄介面縮放（Chrome 側欄沒有瀏覽器縮放）：Ctrl+滾輪／Ctrl+±／Ctrl+0 ----
 // 只縮 DOM 介面：body 掛 --panelZoom，CSS 對 #gl 以外的頂層元素套 zoom——卡堆畫布本身的
 // raycast 座標與貼圖解析度完全不動（畫布頂緣用 calc 跟著頂列視覺高度走）。畫布上的
@@ -36,17 +40,29 @@ if (PANEL) document.body.classList.add('panel-mode');
 const PANEL_ZOOM_MIN = 0.7, PANEL_ZOOM_MAX = 1.6;
 const PANEL_ZOOM_KEY = 'rd.panelZoom';
 let panelZoom = 1;
+let panelZoomPostT = null;
 function setPanelZoom(z) {
   panelZoom = Math.round(Math.min(PANEL_ZOOM_MAX, Math.max(PANEL_ZOOM_MIN, z)) * 100) / 100;
   try { localStorage.setItem(PANEL_ZOOM_KEY, String(panelZoom)); } catch (_) { /* 沒儲存空間就算了 */ }
+  // 共享寫回節流到最後一格落定：Ctrl+滾輪連發時 server 端每筆都是同步落盤，不節流會狂寫磁碟
+  clearTimeout(panelZoomPostT);
+  panelZoomPostT = setTimeout(() => postSharedPrefs({ panelZoom }), 800);
   document.body.style.setProperty('--panelZoom', String(panelZoom));
   dispatchEvent(new Event('resize'));   // 頂列視覺高度變了：卡堆畫布的 top／高度全部重算到位
 }
+let hasLocalPanelZoom = false;
 if (PANEL) {
   try {
-    const z = parseFloat(localStorage.getItem(PANEL_ZOOM_KEY));
-    if (Number.isFinite(z) && z >= PANEL_ZOOM_MIN && z <= PANEL_ZOOM_MAX) panelZoom = z;
+    const raw = localStorage.getItem(PANEL_ZOOM_KEY);
+    const z = parseFloat(raw);
+    if (raw !== null && Number.isFinite(z) && z >= PANEL_ZOOM_MIN && z <= PANEL_ZOOM_MAX) { panelZoom = z; hasLocalPanelZoom = true; }
   } catch (_) { /* 壞資料就回到 1 */ }
+  if (!hasLocalPanelZoom) {
+    // 抽屜的 localStorage 被按站台切開（永遠空）：從 server 共享 prefs 撿回使用者設過的縮放
+    // （以「本機沒存過」判斷，不以 ===1：使用者明確存過 1.0 不該被他處的共享值蓋掉）
+    const sh = Number(sharedPrefsNow().panelZoom);
+    if (Number.isFinite(sh) && sh >= PANEL_ZOOM_MIN && sh <= PANEL_ZOOM_MAX) panelZoom = Math.round(sh * 100) / 100;
+  }
   if (panelZoom !== 1) document.body.style.setProperty('--panelZoom', String(panelZoom));
   // 卡堆畫布上＝相機遠近（stack.js 的 wheel handler）；其餘地方（頂列、閱讀覆層…）＝介面縮放
   addEventListener('wheel', e => {
@@ -196,6 +212,20 @@ const stack = await createCardView();
 const no3d = !!stack.no3d;
 // 側邊欄精簡模式（400px 窄欄）：焦點卡幾乎填滿欄寬，卡內字才讀得到
 if (!no3d && PANEL && typeof stack.setCompactFit === 'function') stack.setCompactFit(true);
+// 視角共享：存「我的視角」時連 server 共享 prefs 一起寫；抽屜 iframe 的 localStorage
+// 被站台切開看不到這裡，共享那份（開機已被 loadSharedPrefs 鋪進 __rifflePrefsBoot）是它的真身
+if (!no3d && typeof stack.onPersistFav !== 'undefined') stack.onPersistFav = v => postSharedPrefs({ favView: v });
+// 開機落點（僅面板系：側邊欄／抽屜）：沒存過「我的視角」就用各 surface 共用的最後視角，
+// 再沒有才回預設視角。完整 App 維持「沒存過＝預設視角」的既有行為不動。
+if (!no3d && PANEL && !stack.favView()) {
+  const lv = sharedPrefsNow().lastView;
+  if (lv && Number.isFinite(lv.yaw) && Number.isFinite(lv.pitch) && Number.isFinite(lv.zoom)) {
+    stack.orbit.yaw = clamp(lv.yaw, -30, 30);
+    stack.orbit.pitch = clamp(lv.pitch, 22, 65);
+    stack.orbit.zoom = clamp(lv.zoom, 0.7, 1.8);
+    stack.poke();
+  }
+}
 if (no3d) {
   document.body.classList.add('no3d-mode');   // CSS 藏掉 3D 專屬的視角按鈕列；畫布自己藏
   canvas.style.display = 'none';
@@ -1424,6 +1454,23 @@ function toast(msg, action) {
   const favBtn = document.getElementById('btnViewFav');
   const FADE_MS = 200;               // 跟 index.html #viewBar 的 .18s 一起看
   let hideTimer = null, rafId = null, last = null;
+  // 「最後在用的視角」寫回 server 共享 prefs（去抖 1.5s：拖曳途中不每幀都寫）。
+  // 沒存過「我的視角」的面板系 surface 開機就拿它當落點；與 favView 同值時不重寫。
+  const VIEW_SETTLE_MS = 1500;
+  let lastViewTimer = null;
+  let lastSentView = (window.__rifflePrefsBoot && window.__rifflePrefsBoot.lastView) || null;
+  const sameView = (a, b) => !!a && !!b &&
+    Math.abs(a.yaw - b.yaw) < 0.001 && Math.abs(a.pitch - b.pitch) < 0.001 && Math.abs(a.zoom - b.zoom) < 0.001;
+  const noteViewSettled = () => {
+    if (no3d) return;
+    clearTimeout(lastViewTimer);
+    lastViewTimer = setTimeout(() => {
+      const v = { yaw: stack.orbit.yaw, pitch: stack.orbit.pitch, zoom: stack.orbit.zoom };
+      if (sameView(v, lastSentView)) return;
+      lastSentView = v;
+      postSharedPrefs({ lastView: v });
+    }, VIEW_SETTLE_MS);
+  };
   const sync = differsIn => {
     // differs 由 stack.notifyView 傳進來；undefined（初次、存檔後）就自己算
     const differs = !no3d && (differsIn === undefined ? stack.viewDiffers() : differsIn);
@@ -1445,7 +1492,7 @@ function toast(msg, action) {
       hideTimer = setTimeout(() => bar.classList.remove('on'), FADE_MS);
     }
   };
-  stack.onViewChange = sync;
+  stack.onViewChange = differs => { sync(differs); noteViewSettled(); };
   document.getElementById('btnViewHome').addEventListener('click', () => stack.resetView());
   favBtn.addEventListener('click', () => { if (!stack.goFavView()) toast(t('viewFavNone')); });
   saveBtn.addEventListener('click', () => {
@@ -1825,8 +1872,11 @@ window.__dbg = {
   clearFavView: () => {
     try { localStorage.removeItem('floderMyView'); } catch (_) {}
     stack._favCache = undefined;
+    try { delete window.__rifflePrefsBoot.favView; } catch (_) {}   // 開機快照那份也清：favView() 的第二兜底，不清下次讀又被撿回
+    postSharedPrefs({ favView: null });   // 共享那份也清——抽屜靠它兜底，不清會被撿回去
     stack.notifyView();
   },
+  sharedPrefs: () => sharedPrefsNow(),
   setTheme: n => setTheme(n),
   // 投影（project.js）的測試鉤子：直接餵一個事件、假裝分頁在背景、讀最近清單
   project: data => handleProject(data),

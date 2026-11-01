@@ -33,6 +33,8 @@ function ok(cond, tag, extra) {
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffle-drawer-'));
 fs.mkdirSync(path.join(TMP, 'root'), { recursive: true });
 fs.writeFileSync(path.join(TMP, 'root', 'readme.md'), '# drawer fixture\n');
+// 多放幾張卡：滾輪驗收（scrollTarget 要動）需要卡堆有得捲
+for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(TMP, 'root', `note-${i}.md`), `# drawer fixture ${i}\n`);
 const CFG = path.join(TMP, 'config.json');
 fs.writeFileSync(CFG, JSON.stringify({ roots: [path.join(TMP, 'root')], pinned: [], convoRoots: [] }, null, 2));
 const PROFILE = path.join(TMP, 'profile');
@@ -161,6 +163,75 @@ async function main() {
   }
   ok(!!panelFrame, 'drawer iframe loaded the real panel page (?mode=panel on the server)', panelFrame ? panelFrame.url() : page.frames().map(f => f.url()));
 
+  // ---- Ctrl+滾輪：畫布上＝相機縮放、面板其餘處＝介面縮放、主頁不准瀏覽器縮放 ----
+  // 機制斷言：指標在抽屜內時背景把本分頁 zoom mode 設成 disabled（「整頁縮放」手勢
+  // 不存在，Ctrl+滾輪才會當一般 wheel 送進巢狀 iframe）；指標離開立刻還原 automatic。
+  let cardN = 0;
+  for (let i = 0; i < 40 && !cardN; i++) {
+    cardN = await panelFrame.evaluate(() => (window.__dbg && window.__dbg.scene().view.length) || 0).catch(() => 0);
+    if (!cardN) await sleep(250);
+  }
+  ok(cardN > 0, 'panel stack has cards to wheel over', cardN);
+  const getFixZoomMode = () => opt.evaluate(u => chrome.tabs.query({ url: u }).then(ts =>
+    ts && ts[0] ? chrome.tabs.getZoomSettings(ts[0].id) : null), FIX + '/p1');
+  const frameRect = await page.evaluate(() => {
+    const h = document.getElementById('riffle-drawer-host');
+    const r = h.shadowRoot.querySelector('iframe.f').getBoundingClientRect();
+    return { x: r.x, y: r.y, w: r.width, h: r.height };
+  });
+  const tbBottom = await panelFrame.evaluate(() =>
+    document.getElementById('toolbar').getBoundingClientRect().bottom).catch(() => 82);
+  const dpr0 = await page.evaluate(() => devicePixelRatio);
+  // 指標移上卡片畫布（面板 iframe 內頂列之下）；等 mouseenter → 背景關縮放落地
+  const canvasPt = { x: Math.round(frameRect.x + frameRect.w / 2), y: Math.round(frameRect.y + tbBottom + 60) };
+  await page.mouse.move(canvasPt.x, canvasPt.y);
+  await sleep(500);
+  let zs = await getFixZoomMode();
+  ok(zs && zs.mode === 'disabled', 'hovering the drawer: host tab zoom mode disabled (browser-zoom gesture off)', zs);
+
+  // Ctrl+滾輪（畫布上）→ 相機 zoom 變、介面 zoom 不變
+  const cam0 = await panelFrame.evaluate(() => window.__dbg.camera().orbit.zoom);
+  const uiZ0 = await panelFrame.evaluate(() => window.__dbg.uiZoom());
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -120);
+  await page.keyboard.up('Control');
+  await sleep(400);
+  const afterCam = await panelFrame.evaluate(() => ({ cam: window.__dbg.camera().orbit.zoom, z: window.__dbg.uiZoom() }));
+  ok(Math.abs(afterCam.cam - cam0) > 0.01, 'Ctrl+wheel over the drawer canvas zooms the camera', { cam0, cam: afterCam.cam });
+  ok(afterCam.z === uiZ0, 'camera zoom did not touch the UI zoom', { uiZ0, z: afterCam.z });
+  ok(await page.evaluate(() => devicePixelRatio) === dpr0,
+     'host page did NOT browser-zoom while ctrl+wheel over the drawer', { dpr0 });
+
+  // 普通滾輪照常走卡
+  const sc0 = await panelFrame.evaluate(() => window.__dbg.scene().scrollTarget);
+  await page.mouse.wheel(0, 240);
+  await sleep(300);
+  const sc1 = await panelFrame.evaluate(() => window.__dbg.scene().scrollTarget);
+  ok(sc1 !== sc0, 'plain wheel still advances the cards in the drawer', { sc0, sc1 });
+
+  // Ctrl+滾輪（面板頂列搜尋框上，非畫布）→ 介面縮放、相機不動
+  const sb = await panelFrame.evaluate(() => {
+    const r = document.getElementById('searchBox').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.move(Math.round(frameRect.x + sb.x), Math.round(frameRect.y + sb.y));
+  await sleep(400);
+  // 注意：相機在介面縮放後會落回我的視角（setPanelZoom 派發 resize → settleViewFor），
+  // 真側邊欄同款行為，此處只驗介面縮放確實動了
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -100);
+  await page.keyboard.up('Control');
+  await sleep(400);
+  const afterUi = await panelFrame.evaluate(() => ({ z: window.__dbg.uiZoom(), cam: window.__dbg.camera().orbit.zoom }));
+  ok(afterUi.z !== uiZ0, 'Ctrl+wheel over the panel toolbar zooms the UI', { uiZ0, z: afterUi.z });
+  await panelFrame.evaluate(() => window.__dbg.setUiZoom(1));   // 還原，免得影響後面量測
+
+  // 指標離開抽屜 → zoom mode 還原（抽屜外的主頁 Ctrl+滾輪回到正常瀏覽器縮放行為）
+  await page.mouse.move(640, 420, { steps: 4 });
+  await sleep(600);
+  zs = await getFixZoomMode();
+  ok(zs && zs.mode === 'automatic', 'pointer left the drawer: host tab zoom mode restored to automatic', zs);
+
   fs.mkdirSync(SHOTS, { recursive: true });
   await sleep(1500);   // 面板渲染一下再拍
   await page.screenshot({ path: path.join(SHOTS, 'drawer-open.png') });
@@ -261,6 +332,66 @@ async function main() {
   let gone = false;
   for (let i = 0; i < 25 && !gone; i++) { await sleep(200); gone = (await drawerState(page)) === null; }
   ok(gone, 'setting OFF again: host element removed live');
+
+  // ---- 既有分頁補種＋孤兒復活（不重整頁面）----
+  // 無頭 Playwright 裡 chrome.runtime.reload() 會讓擴充整個死掉（SW 不重開、
+  // extension 頁導航被永久擋），不能用真 reload 模擬；改為直接驗兩個機制：
+  //  (a) 撥 ON → 背景 injectDrawerScripts 對既開分頁 executeScript（計數器為證），
+  //      活實體的旗標擋下重複注入——host 仍恰好一個；
+  //  (b) 模擬孤兒：把旗標換成「死實體」、留著舊 host 遺體 → 直接呼叫背景的
+  //      injectDrawerScripts()（top-level 函式，worker 全域可達）→ 新腳本拆遺體重建。
+  const inj = () => sw.evaluate(() => testStats.drawerInjects);   // const 在 worker 全域語彙環境，用裸識別符
+  const hostCount = async () => page.evaluate(() => document.querySelectorAll('#riffle-drawer-host').length);
+
+  // (a) 撥 ON：補種要跑過（drawerInjects 增加）且 host 不重複
+  const inj0 = await inj();
+  await opt.evaluate(() => new Promise(res => chrome.storage.local.set({ autoHideDrawer: true }, res)));
+  let st3 = null;
+  for (let i = 0; i < 30 && !st3; i++) { await sleep(200); st3 = await drawerState(page); }
+  ok(!!st3, 'flip ON: drawer back (setting listener and/or background re-seed)', st3);
+  ok((await inj()) > inj0, 'flip ON: background injected drawer.js into existing tabs', { before: inj0, after: await inj() });
+  ok((await hostCount()) === 1, 'flip ON re-seed over a live instance: still exactly one host', await hostCount());
+
+  // (b) 孤兒復活：真孤兒＝擴充重載後舊內容腳本的 chrome.runtime 已死、DOM 遺體留著。
+  //      用 ISOLATED world 注入（與內容腳本同一世界）把旗標換成「死實體」並標記遺體
+  //      （page.evaluate 是 MAIN world 碰不到隔離世界的旗標），再叫背景補種：
+  //      新腳本要拆掉遺體重建無標記的新 host、恰好一個、而且能用。
+  await page.mouse.move(640, 420, { steps: 4 });   // 先收合，等等「開得起來」才算數
+  await sleep(400 + 150 + 350);
+  let closedSt = await drawerState(page);
+  ok(closedSt && closedSt.open === '0', 'resurrection setup: drawer collapsed, pointer parked away', closedSt);
+  const tabId = await opt.evaluate(u => chrome.tabs.query({ url: u }).then(ts => ts[0] && ts[0].id), FIX + '/p1');
+  await opt.evaluate(id => chrome.scripting.executeScript({
+    target: { tabId: id }, world: 'ISOLATED',
+    func: () => {
+      const h = document.getElementById('riffle-drawer-host');
+      if (h) h.dataset.corpse = '1';               // 標記舊遺體：復活後要看不到這個標記
+      window.__rdDrawerInit = { alive: () => false };   // 模擬「舊腳本上下文已死」
+    }
+  }), tabId);
+  const inj1 = await inj();
+  await sw.evaluate(() => globalThis.injectDrawerScripts());
+  let fresh = false;
+  for (let i = 0; i < 40 && !fresh; i++) {
+    await sleep(250);
+    fresh = await page.evaluate(() => {
+      const h = document.getElementById('riffle-drawer-host');
+      return !!h && !h.dataset.corpse;             // 新 host 沒有遺體標記
+    });
+  }
+  ok(fresh, 'orphan flag + corpse: re-seed builds a FRESH host without a page reload');
+  ok((await inj()) > inj1, 'manual re-seed actually ran executeScript', { before: inj1, after: await inj() });
+  ok((await hostCount()) === 1, 'resurrection removed the orphan corpse: exactly one host', await hostCount());
+  await edgeOpen(page);
+  st3 = await drawerState(page);
+  ok(st3 && st3.open === '1', 'resurrected drawer opens on edge dwell', st3);
+  await page.mouse.move(640, 420, { steps: 4 });   // 收合，讓下一步在乾淨狀態
+  await sleep(400 + 150 + 350);
+
+  // 第二次補種：現在旗標是活實體 → 擋下，不雙掛
+  await sw.evaluate(() => globalThis.injectDrawerScripts());
+  await sleep(800);
+  ok((await hostCount()) === 1, 'second re-seed over the resurrected (live) instance: one host', await hostCount());
 }
 
 main()

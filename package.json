@@ -61,6 +61,7 @@
     "test:panel-boot": "node tests/panel-boot-e2e.mjs",
     "test:panel-button": "node tests/panel-button-e2e.mjs",
     "test:drawer": "node tests/drawer-e2e.mjs",
+    "test:drawer-view": "node tests/drawer-view-e2e.mjs",
     "test:revise": "node tests/revise-e2e.mjs",
     "test:view": "node tests/view-restore-e2e.mjs",
     "test:select": "node tests/select-scroll-e2e.mjs",

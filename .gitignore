@@ -5,6 +5,8 @@ config.json
 config.json.tmp
 piles.json
 piles.json.tmp
+prefs.json
+prefs.json.tmp
 crates/*/target/
 .claude/worktrees/
 tests/fixtures/_test-config.json

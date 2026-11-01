@@ -101,6 +101,7 @@ export class StackScene {
     // 開頁／F5／重開 App：存過「我的視角」就直接用它，沒存過才用預設視角
     this.applyFavView();
     this.onViewChange = null;         // main.js 接線：視角跟「我的視角」不同時提示存／回
+    this.onPersistFav = null;         // main.js 接線：存「我的視角」時同步寫一份到 server 共享 prefs
     this.fitTarget = { target: new THREE.Vector3(), dist: 12, pitch: POSE_PITCH, yaw: 0 };
     this.fitCur = { target: new THREE.Vector3(), dist: 12, pitch: POSE_PITCH, yaw: 0 };
     this.compactFit = false;          // 側邊欄窄欄：焦點卡幾乎填滿欄寬（main.js 依 ?mode=panel 開）
@@ -866,16 +867,26 @@ export class StackScene {
   notifyView() {
     if (this.onViewChange) this.onViewChange(this.viewDiffers());
   }
-  // 「我的視角」：使用者自己調好的左右/俯角/遠近，存在這台電腦的瀏覽器裡。
-  // 解析結果快取起來——拖曳時每個 pointermove 都會問一次，不能每次 parse localStorage。
+  // 「我的視角」：使用者自己調好的左右/俯角/遠近。先讀這台瀏覽器這個 surface 的
+  // localStorage；沒有才讀 server 共享 prefs（main.js 開機先抓進 __rifflePrefsBoot）——
+  // 抽屜的面板頁是被任意網站框住的第三方 iframe，localStorage 被按站台切開，
+  // 永遠讀不到完整 App 存的視角，共享那份才是它的真身。
+  // 解析結果快取起來——拖曳時每個 pointermove 都會問一次，不能每次 parse。
   favView() {
     if (this._favCache !== undefined) return this._favCache;
+    const ok = raw => raw && Number.isFinite(raw.yaw) && Number.isFinite(raw.pitch) && Number.isFinite(raw.zoom);
     let v = null;
     try {
       const raw = JSON.parse(localStorage.getItem('floderMyView') || 'null');
       // 三個值都得是有限數字：壞資料（手改、舊版格式）就當沒存過
-      if (raw && Number.isFinite(raw.yaw) && Number.isFinite(raw.pitch) && Number.isFinite(raw.zoom)) v = raw;
+      if (ok(raw)) v = raw;
     } catch (_) {}
+    if (!v) {
+      try {
+        const b = (typeof window !== 'undefined') && window.__rifflePrefsBoot;
+        if (b && ok(b.favView)) v = b.favView;
+      } catch (_) {}
+    }
     this._favCache = v;
     return v;
   }
@@ -892,6 +903,7 @@ export class StackScene {
     const v = { yaw: this.orbit.yaw, pitch: this.orbit.pitch, zoom: this.orbit.zoom };
     let ok = true;
     try { localStorage.setItem('floderMyView', JSON.stringify(v)); } catch (_) { ok = false; }
+    if (ok && this.onPersistFav) { try { this.onPersistFav(v); } catch (_) {} }   // 同步給 server 共享（抽屜／別的站台才看得到）
     if (ok) { this._favCache = v; this.notifyView(); }   // 剛存的就是目前視角：提示按鈕淡出
     return ok ? v : null;
   }

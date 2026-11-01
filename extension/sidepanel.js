@@ -67,17 +67,28 @@ async function tick() {
       up = true;
       frameLoaded = false;
       frameSrcAt = Date.now();
-      // 「點卡自動開側欄」進來的：一次性帶 ?tabs=1&tabfocus=，讓 RiffleDesk 直接進
-      // 分頁模式並捲到那張卡。只認 60 秒內的紀錄，之後手動開側欄不被舊紀錄劫持。
       let focusTab = 0;
-      try {
-        if (api.storage && api.storage.session) {
-          const d = await Promise.resolve(api.storage.session.get({ panelFocus: null }));
-          if (d.panelFocus && Date.now() - (d.panelFocus.at || 0) < 60000) {
-            focusTab = Math.floor(Number(d.panelFocus.tabId)) || 0;
+      if (DRAWER_MODE) {
+        // 抽屜：面板殼被內容腳本框進「使用者正在看的那個分頁」，getCurrent 回的就是
+        // 宿主分頁——抽屜的職責是快翻網頁卡，所以一律進分頁模式、一開就停在宿主那張卡上。
+        // （不讀 storage.session 的 panelFocus：那是「點卡自動開側欄」給真側邊欄的開機目標，
+        //   帶進抽屜會把人拉到別的分頁去——看的是這頁就該停在這頁的卡。）
+        try {
+          const tab = await Promise.resolve(api.tabs && api.tabs.getCurrent ? api.tabs.getCurrent() : null);
+          if (tab && Number.isFinite(tab.id) && tab.id > 0) focusTab = tab.id;
+        } catch (_) { /* 拿不到就停在分頁模式第一張 */ }
+      } else {
+        // 「點卡自動開側欄」進來的：一次性帶 ?tabs=1&tabfocus=，讓 RiffleDesk 直接進
+        // 分頁模式並捲到那張卡。只認 60 秒內的紀錄，之後手動開側欄不被舊紀錄劫持。
+        try {
+          if (api.storage && api.storage.session) {
+            const d = await Promise.resolve(api.storage.session.get({ panelFocus: null }));
+            if (d.panelFocus && Date.now() - (d.panelFocus.at || 0) < 60000) {
+              focusTab = Math.floor(Number(d.panelFocus.tabId)) || 0;
+            }
           }
-        }
-      } catch (_) { /* 沒有就算了 */ }
+        } catch (_) { /* 沒有就算了 */ }
+      }
       // 抽屜模式：面板頁被任意網頁間接框住，server 只對帶配對 token 的請求放寬 frame-ancestors
       let dk = '';
       if (DRAWER_MODE) {
@@ -86,7 +97,10 @@ async function tick() {
           if (d && typeof d.riffleToken === 'string') dk = d.riffleToken;
         } catch (_) { /* 拿不到就載不出來，跟沒放寬一樣 */ }
       }
-      frame.src = base() + '/?mode=panel' + (focusTab > 0 ? `&tabs=1&tabfocus=${focusTab}` : '') + (dk ? `&dk=${encodeURIComponent(dk)}` : '');
+      const tabsQ = DRAWER_MODE
+        ? '&tabs=1' + (focusTab > 0 ? `&tabfocus=${focusTab}` : '')
+        : (focusTab > 0 ? `&tabs=1&tabfocus=${focusTab}` : '');
+      frame.src = base() + '/?mode=panel' + tabsQ + (dk ? `&dk=${encodeURIComponent(dk)}` : '');
       frame.style.display = 'block';
       down.style.display = 'none';
     } else if (!ok && up) {
@@ -155,7 +169,8 @@ frame.addEventListener('load', () => {
   if (up) {
     frameLoaded = true;
     // iframe 首次載好：背景存在 session 的「待捲目標」（60 秒內）拿出來用
-    if (!pendingFocusTab && api.storage && api.storage.session) {
+    // （抽屜模式不重送：開機定位已由網址的 tabfocus 帶進去，重送會打擾使用者滾動）
+    if (!pendingFocusTab && !DRAWER_MODE && api.storage && api.storage.session) {
       Promise.resolve(api.storage.session.get({ panelFocus: null })).then(d => {
         if (d.panelFocus && Date.now() - (d.panelFocus.at || 0) < 60000) focusFrame(d.panelFocus.tabId);
       }, () => {});

@@ -202,8 +202,10 @@ async function main() {
   for (let k = 1; k <= 8; k++) { const p = await ctx.newPage(); await p.goto(`${FIX}/p${k}`); }
   ok(true, 'opened 8 fixture tabs (p1–p8)');
   let list = null;
-  for (let i = 0; i < 30 && !(list && list.tabs && list.tabs.length); i++) { await sleep(1000); list = await serverTabs(); }
-  ok(!!(list && list.tabs.length >= 8), 'server carries the pushed tab list', list && { n: list.tabs.length });
+  // 8 個 fixture 分頁是「推」上去的：擴充剛啟動時可能還在抓第一批，偶爾要 20 秒以上。
+  // 這裡是純等待，跟產品行為無關，給到 45 秒免得慢一次就整支紅。
+  for (let i = 0; i < 45 && !(list && list.tabs && list.tabs.length >= 8); i++) { await sleep(1000); list = await serverTabs(); }
+  ok(!!(list && list.tabs && list.tabs.length >= 8), 'server carries the pushed tab list', list && { n: list.tabs && list.tabs.length });
 
   // ---- full app + real 「側欄模式」 button click -------------------------------
   const rd = await ctx.newPage();
@@ -243,13 +245,33 @@ async function main() {
     'extension accepted the click (panel may be refused headless — activation+focus still fire)', panelMsg);
 
   // Chrome 切到被預覽的那個分頁（背景端 tabs.update active:true 一定執行）
-  let actOk = false;
+  let actOk = false, actDiag = null;
+  const actTrace = [];
   for (let i = 0; i < 20 && !actOk; i++) {
     await sleep(300);
-    actOk = await opt.evaluate(id => new Promise(res =>
-      chrome.tabs.query({ active: true }, ts => res(ts.some(t => t.id === id)))), targetTabId);
+    const st = await opt.evaluate(id => new Promise(res => chrome.tabs.query({}, ts => {
+      res({
+        active: ts.filter(t => t.active).map(t => t.id),
+        targetActive: ts.some(t => t.id === id && t.active)
+      });
+    })), targetTabId);
+    actOk = st.targetActive;
+    if (i % 3 === 0) actTrace.push(st.active.join(','));
+    if (!actOk && i % 6 === 5) {
+      actDiag = await opt.evaluate(id => new Promise(res => chrome.tabs.query({}, ts => res({
+        target: (ts.find(t => t.id === id) || {}),
+        active: ts.filter(t => t.active).map(t => ({ id: t.id, w: t.windowId, url: (t.url || '').slice(-24) })),
+        all: ts.map(t => ({ id: t.id, w: t.windowId, active: !!t.active, url: (t.url || '').slice(-20) }))
+      }))), targetTabId);
+      actDiag.sweep = await opt.evaluate(() => new Promise(res => {
+        const t = setTimeout(() => res({ timeout: true }), 3000);
+        chrome.runtime.sendMessage({ type: 'riffle-status' }, r => { clearTimeout(t); res(r || { noReply: true }); });
+      }));
+      actDiag.idle = await opt.evaluate(() => new Promise(res =>
+        chrome.idle.queryState(60, s => res(s))));
+    }
   }
-  ok(actOk, 'background activated the previewed tab', targetTabId);
+  ok(actOk, 'background activated the previewed tab', actDiag ? { targetTabId, actTrace, actDiag } : { targetTabId, actTrace });
 
   // ---- 側欄(分頁模擬)開啟 -----------------------------------------------------
   // headless 擋 sidePanel.open 的 UI，但 panelFocus 已寫進 storage.session——
@@ -319,8 +341,23 @@ async function main() {
 
   // 轉到一個明確的深度位置（離第 0 張、離目標卡都夠遠）
   await frame.evaluate(wheelBurstCall, { n: 6, dy: 120, gapMs: 40 });
-  await sleep(1200);                                  // 等阻尼停穩
-  const settle = await frame.evaluate(probe);
+  // 等阻尼真的停穩再記「使用者位置」。不能只睡固定 1200ms：面板分頁在背景，
+  // rAF 被 Chrome 降頻，阻尼尾巴（差不到一張）會拖上一兩秒才收完；固定睡眠常常
+  // 在「還在往目標滑」的半途取樣，接著觀察窗就把這段動畫當成「卡片被移走」。
+  // 停穩的判準＝連續兩次 cur 一模一樣、且 cur 已經等於 target、且沒在拖。
+  let settle = null, stable = false, prev = null;
+  for (let i = 0; i < 80 && !stable; i++) {
+    await sleep(150);
+    const pr = await frame.evaluate(probe).catch(() => null);
+    if (!pr) { prev = null; continue; }               // 取樣失敗：別跨缺口比，重新開始
+    // cur/target 都是整數（分頁卡一個位置一張、停手後 tick 會吸到整數），
+    // 收斂判定直接比相等；再要求跟前一次一模一樣才算「動畫真的結束」。
+    stable = !pr.dragging && pr.cur === pr.target && prev && prev.cur === pr.cur;
+    prev = pr; settle = pr;
+  }
+  ok(!!settle, 'settle probe succeeded');
+  if (!settle) throw new Error('no probe result during settle wait — aborting (see FAIL above)');
+  ok(stable, 'stack settled after the wheel burst (animation done, not just a fixed sleep)', settle);
   const userId = settle.frontId;
   ok(settle.frontIdx >= 2, 'user settled deep in the stack (not card 0)', settle);
   ok(userId !== targetTabId, 'user position is NOT the clicked tab anymore',
@@ -353,12 +390,16 @@ async function main() {
     { n: samples.length, bad: bad.slice(0, 6) });
 
   // 事件日誌：使用者接手之後不得再有任何程式定位（tab-focus-jump / boot-focus / setFolder）
+  // 只算「真的把位置動了」的：定位事件若 from === to 就是空轉（常見於補送鏈晚到、剛好
+  // 打在使用者開始滾的那一兩幀——位置本來就停在目標上，跳了等於沒跳），不該算成被拉走。
+  // 收窄成「兩欄都在且相等才忽略」：事件形狀若回歸成沒有 from/to，不能連真正的定位一起吞掉。
+  const noop = e => e.ev === 'scrollTarget' && e.from !== undefined && e.to !== undefined && e.from === e.to;
   const evlog = await frame.evaluate(() => window.__ev || []);
   const wheelAt = await frame.evaluate(() => (window.__wheelAt || [0])[0]);
   const progAfter = evlog.filter(e =>
     e.t >= (wheelAt - 20) &&
     (e.ev === 'setFolder' ||
-      (e.ev === 'scrollTarget' && ['tab-focus-jump', 'boot-focus'].includes(e.reason))));
+      (e.ev === 'scrollTarget' && ['tab-focus-jump', 'boot-focus'].includes(e.reason) && !noop(e))));
   ok(progAfter.length === 0, 'after the user wheeled: zero programmatic repositioning events',
     { wheelAt, progAfter: progAfter.slice(0, 8) });
 

@@ -311,14 +311,25 @@ async function main() {
     });
     ok(idleDefault === true, 'options: 閒置時自動補拍截圖 default ON', idleDefault);
 
+    const sweepStatus = () => opt.evaluate(() => new Promise(res =>
+      chrome.runtime.sendMessage({ type: 'riffle-status' }, res)));
+    // 先等任何「自己開起來的」補拍跑完再記原位：不然原位會記成別人（前一輪）掃到一半的
+    // 分頁，接著那一輪收尾還原回它自己的原位，這裡就會誤判成「沒還原」。
+    // 狀態查不到（sendMessage 沒回）時持續重試，不當成「沒在跑」放行；真的等不到就記一個
+    // 明確的 FAIL，免得下面兩條斷言在髒狀態下無聲無息。
+    let preQuiet = false;
+    for (let i = 0; i < 60; i++) {
+      const s = await sweepStatus().catch(() => null);
+      if (s && s.sweep && !s.sweep.running) { preQuiet = true; break; }
+      await sleep(500);
+    }
+    ok(preQuiet, 'no sweep is running before the idle-sweep block starts');
     const orig = await sw.evaluate(async () => {
       const [act] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       return { tabId: act && act.id, winId: act && act.windowId };
     });
     const hook = st => opt.evaluate(s => new Promise(res =>
       chrome.runtime.sendMessage({ type: 'riffle-test-idle', state: s }, r => res(r))), st);
-    const sweepStatus = () => opt.evaluate(() => new Promise(res =>
-      chrome.runtime.sendMessage({ type: 'riffle-status' }, res)));
     const activeTab = async () => {
       try {
         return await sw.evaluate(async () => {

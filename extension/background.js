@@ -128,7 +128,8 @@ let lastPushOkRef = 0, lastErrorRef = '';
 // e2e 計數器（riffle-status 回應帶出）：直達點卡訊息、側欄開啟嘗試、DOM 繪圖、分頁活化事件
 const testStats = { extClicks: 0, panelOpenCalls: 0, panelOpenOk: 0, panelOpenFail: 0,
                     drawn: 0, drawFail: 0, activatedEvents: 0,
-                    closed: 0, restored: 0, backToFull: 0 };
+                    closed: 0, restored: 0, backToFull: 0,
+                    drawerZoomOff: 0, drawerZoomOn: 0, drawerInjects: 0 };
 
 // ---------------------------------------------------------------- helpers
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -773,6 +774,19 @@ async function idleState() {
   if (testIdleOverride) return testIdleOverride;
   try { return await api.idle.queryState(IDLE_DETECT_S); } catch (_) { return 'active'; }
 }
+// 補拍是不是把「人家要的分頁」搶走了：那個視窗的前景已經不是補拍自己最後切過去的那張。
+// ctl.touched 在開跑時就用原始前景播種，之後只由補拍自己改寫——所以在補拍還沒碰過的
+// 視窗裡，使用者現在看到的就是原始前景，比不到就等於「沒被接手」，不算誤判。
+// 純 best-effort：查詢失敗／查不到前景都當成沒接手（照常繼續掃），因為寧可漏擋一次，
+// 也不要讓一次暫時性的查詢失敗把整輪補拍卡死。
+async function takenOver(ctl, windowId) {
+  const want = ctl.touched.get(windowId);
+  if (want == null) return false;                       // 不在本輪名單的視窗：沒得比
+  const ts = await api.tabs.query({ windowId, active: true }).catch(() => []);
+  const cur = ts && ts[0] && ts[0].id;
+  return cur != null && cur !== want;
+}
+
 function shotNeedsRefresh(tb) {
   const c = shotCache.get(tb.id);
   if (!c) return true;
@@ -828,12 +842,20 @@ async function startIdleSweep() {
     }
     if (!due.length) return;
     orig = wins.map(w => ({ winId: w.id, tabId: ((w.tabs || []).find(t => t.active) || {}).id }));
+    // 用原始前景播種「這一輪動過的前景」：補拍還沒碰過的視窗也有基準可比，
+    // 使用者一在別的視窗切分頁就偵測得到（否則那座視窗等同不設防）。
+    for (const o of orig) if (o.tabId != null) ctl.touched.set(o.winId, o.tabId);
     const fw = wins.find(w => w.focused);   // 只看 normal 視窗，popup/devtools 會搶不到焦點
     focusedWin = fw ? fw.id : null;
     sweepTrail.length = 0;
     for (const tb of due) {
       if (ctl.cancel) { sweepTrail.push({ id: tb.id, ok: false, why: 'aborted' }); break; }
       if ((await idleState()) !== 'idle') { userBack = true; sweepTrail.push({ id: tb.id, ok: false, why: 'user back' }); break; } // 每拍一張前都查一次：使用者回來立刻停
+      // 前景已經不是我們上一張切過去的那個（被使用者／側欄按鈕／server 指令切走）＝有人接手，
+      // 立刻收手。沒有這道，補拍會硬把人家剛切到的分頁再切走，一輪一輪蓋過去。
+      // 整個 due 迴圈一起停（不是只跳過這個視窗）：接手通常代表使用者在用畫面，
+      // 這時再切別的視窗一樣會閃，剩下的下一輪 idle 再補。
+      if (await takenOver(ctl, tb.windowId)) { sweepTrail.push({ id: tb.id, ok: false, why: 'taken over' }); break; }
       try { await api.tabs.update(tb.id, { active: true }); } catch (_) { sweepTrail.push({ id: tb.id, ok: false, why: 'activate failed' }); continue; }
       ctl.touched.set(tb.windowId, tb.id);
       await waitTabReady(tb.id, SWEEP_LOAD_WAIT_MS, () => ctl.cancel);
@@ -856,21 +878,30 @@ async function startIdleSweep() {
       }
     }
   } finally {
-    // 還原原本前景：正常跑完（或 abort 但使用者還沒動）就整套還原；
-    // 使用者回來後已經自己切過分頁／視窗的話，那個視窗的還原就跳過——不要覆蓋人家的操作。
-    const gentle = userBack || ctl.cancel;
+    // 還原原本前景。判斷標準改了：只有「現在前景還是補拍自己切過去的那張」才還原。
+    // 現任分頁既不是原位、也不是我們切的＝別人（使用者、側欄按鈕、server 指令）在補拍
+    // 期間切過分頁，那是他的意圖，收尾不准蓋掉。舊做法只看 cancel/userBack，補拍一直
+    // 沒收到「使用者回來」（無頭瀏覽器沒有輸入事件，chrome.idle 永遠是 idle）時，
+    // 收尾會把剛被按鈕切過去的分頁硬拉回原位——使用者看到的就是「按了卻沒切」。
+    // 收尾驗的是「使用者是不是自己還停在原位」：原位已經回來就不動；被別人切走就
+    // 留給人家；只有「被補拍切走、使用者沒接手」才還原（touched 是唯一線索，
+    // 使用者切回原位的那種情況反正也等於原位＝不動作）。
+    // 條件也不看 windows.update：視窗焦點只在真的有「把分頁切回去」時才補，
+    // 且整窗有人接手時就不搶，免得使用者已經在別的視窗了還被拉回來。
+    let restoredAny = false;
     for (const o of orig) {
       try {
         if (o.tabId == null) continue;
-        if (gentle) {
-          const wt = await api.tabs.query({ windowId: o.winId, active: true }).catch(() => []);
-          const curId = wt && wt[0] && wt[0].id;
-          if (ctl.touched.get(o.winId) !== curId) continue;   // 使用者已接手這個視窗
-        }
+        const wt = await api.tabs.query({ windowId: o.winId, active: true }).catch(() => []);
+        const curId = wt && wt[0] && wt[0].id;
+        if (curId == null) { restoredAny = true; continue; }   // 視窗沒了
+        if (curId === o.tabId) { restoredAny = true; continue; }   // 已經回原位
+        if (curId !== ctl.touched.get(o.winId)) { restoredAny = true; continue; }  // 別人切的，留給人家
         await api.tabs.update(o.tabId, { active: true });
+        restoredAny = true;
       } catch (_) {}
     }
-    if (focusedWin != null && !gentle) {
+    if (focusedWin != null && restoredAny && !userBack && !ctl.cancel) {
       try { await api.windows.update(focusedWin, { focused: true }); } catch (_) {}
     }
     if (sweepCtl === ctl) sweepCtl.running = false;
@@ -1212,6 +1243,15 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ open: Number.isFinite(w) ? panelOpenInWindow(w) : panelPorts.size > 0 });
     return;
   }
+  if (msg && msg.type === 'riffle-drawer-zoom') {
+    // 抽屜內容腳本：指標進抽屜→on:true（暫停本分頁瀏覽器縮放）、離開→on:false（還原）
+    const id = _sender && _sender.tab && _sender.tab.id;
+    if (!(id > 0)) { sendResponse({ ok: false }); return; }
+    setDrawerZoomMode(id, msg.on === true)
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;                                     // 非同步回覆
+  }
   if (msg && msg.type === 'riffle-test-idle') {
     // e2e 測試注入閒置狀態（不要等真的 60 秒）：'idle' → 開始補拍；'active' → 中止並還原
     testIdleOverride = ['idle', 'active', 'locked'].includes(msg.state) ? msg.state : null;
@@ -1271,6 +1311,11 @@ api.storage.onChanged.addListener((chg, area) => {
   if (chg.idleSweep) {
     idlePref = chg.idleSweep.newValue !== false;
     if (!idlePref) abortIdleSweep();       // 關掉當下立刻停
+  }
+  // 抽屜開關撥成 ON：趁使用者剛表達「我要用它」，把內容腳本補進所有既開分頁
+  // （manifest 注入只覆蓋之後載入的頁；活著的實體會被 drawer.js 旗標擋下，重複無害）
+  if (chg.autoHideDrawer && chg.autoHideDrawer.newValue === true && chg.autoHideDrawer.oldValue !== true) {
+    injectDrawerScripts().catch(() => {});
   }
   if (!chg.port) return;
   if (chg.port.newValue === undefined) { port = DEFAULT_PORT; return; }   // 被清掉＝回預設
@@ -1344,6 +1389,107 @@ if (api.runtime && api.runtime.onConnect) {
     });
   });
 }
+
+// ---------------------------------------------------------- 抽屜 Ctrl+滾輪護欄
+// 背景（機制細節見 drawer.js 的註解）：指標停在抽屜上時把該分頁的 zoom mode 暫時設成
+// disabled——Ctrl+滾輪不再是「整頁縮放」手勢，事件照一般 wheel 路由送進巢狀 iframe
+// （畫布＝相機遠近、面板其餘處＝介面縮放），主頁也不會被瀏覽器縮放；離開即還原。
+// per-tab scope：不污染同網站其他分頁的固有縮放設定。
+const drawerZoomTabs = new Set();        // 目前被我們扣在 disabled 的分頁（記憶體層）
+const drawerZoomQueue = new Map();       // tabId → 進行中的切換 promise：同分頁操作序列化
+const ZOOM_SNAP_KEY = 'drawerZoomSnap';  // storage.session 持久層：SW 被回收後仍能還原
+async function zoomSnaps() {
+  try { const o = await api.storage.session.get(ZOOM_SNAP_KEY); return o[ZOOM_SNAP_KEY] || {}; } catch (_) { return {}; }
+}
+async function zoomSnapsSave(all) {
+  try { await api.storage.session.set({ [ZOOM_SNAP_KEY]: all }); } catch (_) {}
+}
+// 停用前先快照該分頁原本的 mode/scope、還原時回填——不硬寫 automatic/per-tab，
+// 免得把使用者自己設的 manual 或 per-origin 縮放設定洗掉。也只還原「我們停用過」
+// 的分頁（有快照或記憶體有記錄），沒追蹤過的一概不碰。setZoomSettings 失敗就往外
+// 拋、不記錄，狀態才不會跟瀏覽器脫節。
+async function applyDrawerZoomMode(tabId, off) {
+  if (!api.tabs || typeof api.tabs.setZoomSettings !== 'function') return;
+  const key = String(tabId);
+  if (off) {
+    if (drawerZoomTabs.has(tabId)) return;                       // 冪等：已停用
+    let snap = { mode: 'automatic', scope: 'per-tab' };
+    try {
+      const s = await api.tabs.getZoomSettings(tabId);
+      if (s && s.mode) snap = { mode: s.mode, scope: s.scope || 'per-tab' };
+    } catch (_) {}
+    await api.tabs.setZoomSettings(tabId, { mode: 'disabled', scope: 'per-tab' });
+    drawerZoomTabs.add(tabId);
+    const all = await zoomSnaps(); all[key] = snap; await zoomSnapsSave(all);
+    testStats.drawerZoomOff++;
+    return;
+  }
+  const all = await zoomSnaps();
+  const snap = all[key] || null;
+  if (!snap && !drawerZoomTabs.has(tabId)) return;               // 沒追蹤過：不動使用者設定
+  try {
+    await api.tabs.setZoomSettings(tabId, snap ? { mode: snap.mode, scope: snap.scope }
+                                               : { mode: 'automatic', scope: 'per-tab' });
+  } catch (_) { /* 分頁可能已關 */ }
+  drawerZoomTabs.delete(tabId);
+  if (snap) { delete all[key]; await zoomSnapsSave(all); }
+  testStats.drawerZoomOn++;
+}
+function setDrawerZoomMode(tabId, off) {
+  if (!(tabId > 0)) return Promise.resolve();
+  // 同分頁先到先做：enter/leave、onUpdated、SW 喚醒掃描併發時也不會亂序
+  const prev = drawerZoomQueue.get(tabId) || Promise.resolve();
+  const job = prev.catch(() => {}).then(() => applyDrawerZoomMode(tabId, off));
+  drawerZoomQueue.set(tabId, job);
+  job.finally(() => { if (drawerZoomQueue.get(tabId) === job) drawerZoomQueue.delete(tabId); });
+  return job;
+}
+// 還原保險：分頁轉址／關閉時若還扣著 disabled，走同一條佇列照快照還原，
+// 免得那個分頁永遠不能縮放；沒追蹤過的分頁不會被誤清設定。
+try {
+  api.tabs.onRemoved.addListener(id => { setDrawerZoomMode(id, false).catch(() => {}); });
+  api.tabs.onUpdated.addListener((id, ch) => {
+    if (ch && ch.status === 'loading') setDrawerZoomMode(id, false).catch(() => {});
+  });
+} catch (_) { /* 沒有 tabs 事件就算了 */ }
+// SW 剛醒（被回收過、記憶體層已丟）：session 快照若還在，代表那些分頁可能卡在
+// disabled，逐一還原。殘留窗口：指標若一直停在抽屜上沒動，要到下一次 mouseenter
+// 才重新停用——比「永遠卡住」好得多。
+(async () => {
+  try {
+    const all = await zoomSnaps();
+    for (const k of Object.keys(all)) await setDrawerZoomMode(Number(k), false);
+  } catch (_) {}
+})();
+
+// ---------------------------------------------------------- 抽屜內容腳本補種
+// manifest content_scripts 只管「擴充就緒之後才載入」的頁面——安裝／重載前就開著的
+// 分頁永遠等不到 drawer.js（看起來像「抽屜只在某一個分頁生效」）。三個時機把三支
+// 檔補進所有已開的 http/https 分頁：安裝／更新、瀏覽器啟動、autoHideDrawer 撥成 ON。
+// drawer.js 的旗標是活體感知的：活實體跳過、死實體拆遺體重建——重複注入無害。
+// 休眠分頁不喚醒（它恢復載入時 manifest 注入自然會補）；單分頁失敗不擋其他分頁。
+const DRAWER_CS_FILES = ['defaults.js', 'i18n.js', 'drawer.js'];
+async function injectDrawerScripts() {
+  if (!api.scripting || typeof api.scripting.executeScript !== 'function') return;
+  let on = false;                                    // 功能關著就不擴大注入面
+  try { on = !!(await api.storage.local.get('autoHideDrawer')).autoHideDrawer; } catch (_) {}
+  if (!on) return;
+  let tabs = [];
+  try {
+    tabs = await api.tabs.query({ windowType: 'normal', url: ['http://*/*', 'https://*/*'] });
+  } catch (_) { return; }
+  const jobs = (tabs || [])
+    .filter(t => t && t.id > 0 && !t.discarded)
+    .map(t => Promise.resolve()
+      .then(() => api.scripting.executeScript({ target: { tabId: t.id }, files: DRAWER_CS_FILES }))
+      .then(() => { testStats.drawerInjects++; })    // 只算成功，失敗不灌水
+      .catch(() => {}));                             // 特殊頁／無權限／分頁剛關：跳過
+  await Promise.allSettled(jobs);                    // 並發跑，分頁多也不拖
+}
+try {
+  if (api.runtime.onInstalled) api.runtime.onInstalled.addListener(() => { injectDrawerScripts().catch(() => {}); });
+  if (api.runtime.onStartup) api.runtime.onStartup.addListener(() => { injectDrawerScripts().catch(() => {}); });
+} catch (_) { /* 老引擎沒這些事件就算了 */ }
 
 // 叫側欄捲到某張卡：側欄開著就即時轉（runtime message → sidepanel.js → postMessage 進
 // iframe）；不在（正要開起來）就存 storage.session，sidepanel.js 開好讀出來自己捲。

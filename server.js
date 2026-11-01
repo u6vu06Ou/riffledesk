@@ -1520,6 +1520,78 @@ function apiPileGet(res, u) {
 }
 // ================== end piles ==================
 
+// ==================== shared UI prefs (view sync across full app / panel / drawer) ====================
+// The auto-hide drawer's panel page rides in a third-party iframe under whatever
+// site is open, so Chrome storage partitioning hands it a per-site, empty
+// localStorage: it can never see the "★ 我的視角" saved in the full app. A small
+// JSON file beside config.json (like piles.json) is the shared store instead —
+// every surface fetches it at boot and mirrors its own saves back here.
+// Guards: GET goes through the global /api/ Sec-Fetch-Site rule (cross-site
+// fetches refused); POST goes through readWritePayload (JSON body + mandatory
+// same-origin Origin — the drawer iframe IS same-origin with this server).
+const PREFS_PATH = path.join(path.dirname(CONFIG_PATH), 'prefs.json');
+// loose caps only — the clients clamp to their exact orbit ranges; this layer
+// just rejects junk so a corrupt or hand-edited file can never break the UI
+function prefView(v) {
+  if (!v || typeof v !== 'object') return null;
+  if (typeof v.yaw !== 'number' || typeof v.pitch !== 'number' || typeof v.zoom !== 'number') return null;
+  if (!Number.isFinite(v.yaw) || !Number.isFinite(v.pitch) || !Number.isFinite(v.zoom)) return null;
+  if (Math.abs(v.yaw) > 30 || v.pitch < 0 || v.pitch > 90 || v.zoom < 0.3 || v.zoom > 3) return null;
+  return { yaw: v.yaw, pitch: v.pitch, zoom: v.zoom };
+}
+const PREF_SANITIZERS = {
+  favView: prefView,     // ★ 我的視角（使用者按「存成我的視角」）
+  lastView: prefView,    // 最近一次實際在用的視角（沒存過 favView 時的落點）
+  // 側欄／抽屜的介面縮放
+  panelZoom: v => (typeof v === 'number' && Number.isFinite(v) && v >= 0.5 && v <= 2) ? v : null
+};
+function loadPrefs() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(PREFS_PATH, 'utf8'));
+    const out = {};
+    for (const k of Object.keys(PREF_SANITIZERS)) {
+      const v = PREF_SANITIZERS[k](raw && raw[k]);
+      if (v !== null) out[k] = v;
+    }
+    return out;
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') console.warn('[prefs] load failed:', e.message || e);   // 第一次跑沒檔案是正常的
+    return {};
+  }
+}
+let sharedPrefs = loadPrefs();
+function savePrefs() {
+  try {
+    const tmp = PREFS_PATH + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(sharedPrefs, null, 2));
+    fs.renameSync(tmp, PREFS_PATH);
+  } catch (e) { console.warn('[prefs] save failed:', (e && e.message) || e); }
+}
+async function apiPrefs(req, res) {
+  if (req.method === 'GET') return sendJson(res, 200, { ok: true, prefs: sharedPrefs });
+  const payload = await readWritePayload(req, res);
+  if (!payload) return; // error already sent
+  if (typeof payload !== 'object') return sendJson(res, 400, { ok: false, error: 'bad payload' });
+  // 兩階段：先整包驗證、全過才一次套用——半途壞值不能留下「改了一半的記憶體狀態」
+  const staged = {};
+  for (const k of Object.keys(payload)) {
+    if (!Object.hasOwn(PREF_SANITIZERS, k)) continue;   // 不認得的鍵靜默略過（前瞻相容）
+    if (payload[k] === null) { staged[k] = null; continue; }   // null = 明確刪除（清掉 favView）
+    const v = PREF_SANITIZERS[k](payload[k]);
+    if (v === null) return sendJson(res, 400, { ok: false, error: 'bad value for ' + k });
+    staged[k] = v;
+  }
+  let changed = false;
+  for (const k of Object.keys(staged)) {
+    if (staged[k] === null) { if (k in sharedPrefs) { delete sharedPrefs[k]; changed = true; } continue; }
+    sharedPrefs[k] = staged[k];
+    changed = true;
+  }
+  if (changed) savePrefs();
+  return sendJson(res, 200, { ok: true, prefs: sharedPrefs });
+}
+// ================== end shared UI prefs ==================
+
 // ==================== browser tabs bridge (Chrome extension → server → UI) ====================
 // The web page cannot see the browser's other tabs, so a small MV3 extension
 // (extension/) pushes the tab list here and long-polls for commands. Everything
@@ -2071,6 +2143,9 @@ async function requestHandler(req, res) {
       return apiPileGet(res, u);
     }
     if (p === '/api/piles') return apiPileList(res);
+
+    // shared UI prefs (view sync across full app / side panel / auto-hide drawer)
+    if (p === '/api/prefs') return apiPrefs(req, res);
 
     // browser tabs bridge (extension → server → UI); implementation above
     if (p === '/api/tabs') {

@@ -15,14 +15,41 @@
 (function () {
   'use strict';
   if (window.top !== window) return;                 // 只有頂層頁面掛抽屜
-  if (window.__rdDrawerInit) return;                 // 擴充 reload 後舊腳本還在，別重複掛
-  window.__rdDrawerInit = true;
+  const HOST_ID = 'riffle-drawer-host';
+  // 防重複旗標：活體才擋。擴充重載／更新後舊腳本變孤兒（runtime 已死、事件監聽全啞），
+  // 但它蓋的 shadow host 遺體還留在頁面上——探到死實體就拆掉舊 host、換新實體接管；
+  // 探到活實體（同頁重複注入，例如背景補種）直接跳過，不準雙掛。
+  // 更舊版只放布林 true：帶布林旗標的腳本必然是舊版，新腳本能跑到這行時它已成孤兒，
+  // 一律當死處理（拆掉它的 host 才能復活）。
+  // 先確認「我們自己」是活的（有 runtime id）才准動 page 上的遺體：
+  // 孤兒腳本先動手會留下「沒抽屜、旗標又活著」的死狀態。
   const api = globalThis.browser ?? globalThis.chrome;
   if (!api || !api.runtime || !api.storage || !api.storage.local) return;
   try { if (!api.runtime.id) return; } catch (_) { return; }   // 孤兒腳本（擴充已重載）
+  let resurrected = false;
+  {
+    const prev = window.__rdDrawerInit;
+    if (prev) {
+      let alive = false;
+      if (typeof prev === 'object' && typeof prev.alive === 'function') {
+        try { alive = !!prev.alive(); } catch (_) { alive = false; }
+      }
+      if (alive) return;                             // 活實體在：重複注入，跳過
+      try { document.querySelectorAll('#' + HOST_ID).forEach(h => h.remove()); } catch (_) {}
+      resurrected = true;
+    }
+  }
+  window.__rdDrawerInit = {                          // 先佔旗標再往下跑：後到的注入馬上被擋
+    alive: () => { try { return !!api.runtime.id; } catch (_) { return false; } }
+  };
+  if (resurrected) {
+    // 前一代死前若正把本分頁扣在瀏覽器縮放 disabled（指標停在遺體上就被重載），還原它
+    try {
+      Promise.resolve(api.runtime.sendMessage({ type: 'riffle-drawer-zoom', on: false })).catch(() => {});
+    } catch (_) { /* 送不出去就算了 */ }
+  }
 
   const ti = (typeof RD_I18N !== 'undefined' && RD_I18N.t) || (k => k);
-  const HOST_ID = 'riffle-drawer-host';
   const DWELL_MS = 120;      // 碰到右緣停這麼久才展開
   const CLOSE_MS = 400;      // 離開抽屜這麼久才收合
   const SLIDE_MS = 150;      // 滑入／滑出動畫
@@ -114,6 +141,7 @@
 
   function teardownUI() {
     clearTimeout(dwellT); clearTimeout(closeT);
+    zoomGuard(false);                                // host 移除時 mouseleave 不一定補送
     if (host) host.remove();
     host = shadow = els = null;
     isOpen = false;
@@ -141,6 +169,7 @@
     if (v) { if (!els.frame) mountFrame(); }
     isOpen = v;
     els.drawer.dataset.open = v ? '1' : '0';
+    if (!v) zoomGuard(false);   // 收合後指標可能還停在原處（mouseleave 沒再補），別留著關縮放
   }
 
   function startDwell() {
@@ -160,6 +189,22 @@
     closeT = setTimeout(() => { closeT = 0; if (isOpen && !pinned && !drag) setOpen(false); }, CLOSE_MS);
   }
 
+  // -------------------------------------------------- Ctrl+滾輪護欄（瀏覽器縮放）
+  // Chrome 定性：指標停在跨程序 iframe 上時，Ctrl+滾輪在瀏覽器程序就被當成
+  // 「整頁縮放」手勢吃掉，去縮放「主頁」——抽屜裡的面板頁巢在「網頁 → 擴充頁 →
+  // 本機 http」兩層 OOPIF 深處，面板自己的 preventDefault（stack.js 畫布、main.js
+  // 介面縮放）攔不到瀏覽器層的手勢，所以卡堆的相機拉近拉遠完全不動，主頁反而被縮放。
+  // （真側邊欄是獨立 view、沒有可縮放的主頁，所以同一份面板頁在那裡沒這個病。）
+  // 網頁端程式碼關不掉這個手勢——事件根本到不了頁面層；擴充可以：
+  // 指標進抽屜就把本分頁的縮放模式暫時切成 disabled（per-tab）。手勢不存在了，
+  // Ctrl+滾輪照一般 wheel 路由送進巢狀 iframe：畫布上＝相機遠近、面板其餘處＝介面
+  // 縮放，主頁也不再被縮放。指標一離開立刻還原 automatic——抽屜外的頁面照常縮放。
+  function zoomGuard(on) {
+    try {
+      Promise.resolve(api.runtime.sendMessage({ type: 'riffle-drawer-zoom', on: !!on })).catch(() => {});
+    } catch (_) { /* 孤兒腳本：送不出去就算了 */ }
+  }
+
   function wire() {
     const { trigger, drawer, pin, grip } = els;
     trigger.addEventListener('mouseenter', e => { lastButtons = e.buttons; startDwell(); });
@@ -172,8 +217,14 @@
       // 觸發條在視口最右邊（蓋到傳統捲軸的外緣）：按下時自廢武功，不攔這次操作
       trigger.style.pointerEvents = 'none';
     });
-    drawer.addEventListener('mouseenter', () => { clearTimeout(closeT); closeT = 0; clearTimeout(dwellT); });
-    drawer.addEventListener('mouseleave', () => { if (!pinned) armClose(); });
+    drawer.addEventListener('mouseenter', () => {
+      clearTimeout(closeT); closeT = 0; clearTimeout(dwellT);
+      zoomGuard(true);                               // 指標進抽屜：關掉主頁的瀏覽器縮放手勢
+    });
+    drawer.addEventListener('mouseleave', () => {
+      zoomGuard(false);                              // 離開馬上還原：抽屜外的頁面照常縮放
+      if (!pinned) armClose();
+    });
     pin.addEventListener('click', () => {
       pinned = !pinned;
       pin.dataset.on = pinned ? '1' : '0';
