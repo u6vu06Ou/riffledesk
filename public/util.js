@@ -1,5 +1,13 @@
 // shared helpers + tunable params (localStorage)
 export const TOOLBAR_H = 44;             // 工具列高度（css px）：canvas 頂端與所有 NDC/像素換算共用
+// panel 模式的工具列是兩列（搜尋＋類型/模式切換），canvas 頂端跟著往下：
+// 座標換算都該用這個，不要直接用 TOOLBAR_H 常數。
+export function toolbarH() {
+  if (typeof document === 'undefined' || !document.body || !document.body.classList.contains('panel-mode')) return TOOLBAR_H;
+  // 側邊欄介面縮放（--panelZoom）只縮 DOM：頂列視覺高度＝82×z，卡堆畫布的 top 跟著走（index.html 的 calc）
+  const z = parseFloat(document.body.style.getPropertyValue('--panelZoom'));
+  return 82 * (Number.isFinite(z) && z > 0 ? z : 1);
+}
 export function fmtSize(n) {
   if (n < 1024) return n + ' B';
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
@@ -16,6 +24,18 @@ export function damp(cur, target, rate, dt) { // exponential damping, frame-rate
 }
 export function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+// 便宜的字串指紋（FNV-1a 32 位，回 8 個十六進位字元）。
+// 「內容有沒有變」的比較用：data: URL favicon（24KB）、頁面文字（1500 字）這種長字串
+// 每次都比全文太貴，先收成短雜湊。
+export function shortHash(s) {
+  const str = s == null ? '' : String(s);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
 }
 
 export async function api(url, opts) {
@@ -74,11 +94,11 @@ export function saveParams() {
 export const KIND_COLOR = {
   markdown: '#2f6fed', text: '#6b7280', html: '#e34f26', json: '#8e44ad',
   table: '#1b9e77', sheet: '#217346', code: '#b58900', image: '#d33682', pdf: '#c0392b',
-  binary: '#4d5a68'
+  binary: '#4d5a68', tab: '#5b5ea6'
 };
 export const KIND_LABEL = {
   markdown: 'MD', text: 'TXT', html: 'HTML', json: 'JSON', table: 'CSV',
-  sheet: 'XLS', code: 'CODE', image: 'IMG', pdf: 'PDF', binary: 'BIN'
+  sheet: 'XLS', code: 'CODE', image: 'IMG', pdf: 'PDF', binary: 'BIN', tab: 'TAB'
 };
 export function kindOf(file) { return file.kind || 'binary'; }
 
@@ -96,7 +116,7 @@ export const THEMES = {
     // 檔名列（表頭）：紙色主題用「墨色系」——低彩度、像書脊標籤，每種檔案一個色相、明度一致
     tabText: '#fbf7ee', reading: '#c0782e',   // 正在閱讀的卡：琥珀色外框（紙色上醒目但不刺眼）
     tabs: { markdown: '#3f5d7a', text: '#6e665a', html: '#a65a32', json: '#6b4f7f', table: '#4c7559',
-      sheet: '#3d6b4e', code: '#86691f', image: '#9c4a60', pdf: '#9a3f35', binary: '#5f5a52' }
+      sheet: '#3d6b4e', code: '#86691f', image: '#9c4a60', pdf: '#9a3f35', binary: '#5f5a52', tab: '#565a86' }
   },
   dark: {
     scene: 0x121417, ground: 0x171a1f,
@@ -107,7 +127,7 @@ export const THEMES = {
     // 暗色主題的表頭：同一組色相但更深更沉（像夜間模式的書籤），不搶內文、白字對比 ≥ 5:1
     tabText: '#efe9dd', reading: '#e0a24a',
     tabs: { markdown: '#2f4a66', text: '#4c5159', html: '#83452a', json: '#553f69', table: '#355a45',
-      sheet: '#2c553d', code: '#6b5418', image: '#7a3a4c', pdf: '#7a332c', binary: '#454b54' }
+      sheet: '#2c553d', code: '#6b5418', image: '#7a3a4c', pdf: '#7a332c', binary: '#454b54', tab: '#3c4066' }
   }
 };
 let themeName = (() => {

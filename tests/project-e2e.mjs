@@ -186,13 +186,26 @@ async function main() {
   await sleep(3400);
   ok((await page.evaluate(() => window.__beeps)) === 2, 'sound returns after the 10 s throttle');
 
-  // ---------- 4. clicking the notification opens the newest held file
+  // ---------- 4. clicking the notification opens ALL held files as one pile (not just the newest)
   await post(page, { path: RD('root/three.md') });
   await sleep(500);
   await page.evaluate(() => window.__dbg.projClickNotif());
+  await page.waitForFunction(() => window.__dbg.fileNames(50).includes('plan.md'), null, { timeout: 8000 }).catch(() => {});
   await sleep(600);
-  const clickedFile = await page.evaluate(() => window.__dbg.panel().file);
-  ok(clickedFile === 'three.md', 'clicking the notification opens the newest held file', clickedFile);
+  const pileNames = await page.evaluate(() => window.__dbg.fileNames(50));
+  const want = ['single.md', 'three.md', 'plan.md', 'one.md', 'two.md'].filter(n => pileNames.includes(n));
+  ok(pileNames.includes('three.md') && pileNames.includes('plan.md') && pileNames.includes('one.md') && pileNames.includes('two.md'),
+    'clicking the notification opens every held file together (pile)', pileNames);
+  ok(new Set(pileNames).size === pileNames.length && pileNames.length === want.length,
+    'the pile holds only the held files, no duplicates, nothing else from the folder', pileNames);
+  // the merge pile is self-made: no extra "new pile" toast/notification for it
+  const pileNotifs = await page.evaluate(() => (window.__notifs || []).filter(n => n.tag === 'riffle-pile').length);
+  ok(pileNotifs === 0, 'self-made merge pile raises no second notification', pileNotifs);
+  // leave the pile so the next steps see the normal folder again
+  await page.keyboard.press('Escape');
+  await sleep(400);
+  await page.keyboard.press('Escape');
+  await sleep(600);
 
   // ---------- 4b. coming back to the foreground opens the newest held file
   await page.evaluate(() => window.__dbg.projHidden(true));

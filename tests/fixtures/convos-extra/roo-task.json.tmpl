@@ -1,0 +1,7 @@
+[
+  { "role": "user", "content": [{ "type": "text", "text": "Roo 幫我加一節說明" }], "ts": @@TS60@@ },
+  { "role": "assistant", "content": [
+      { "type": "tool_use", "name": "insert_content", "input": { "path": "@@ROO_A@@", "line": 10, "content": "..." } },
+      { "type": "tool_use", "name": "apply_diff", "input": { "path": "@@ROO_B@@", "diff": "..." } }
+    ], "ts": @@TS55@@ }
+]

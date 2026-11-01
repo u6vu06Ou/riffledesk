@@ -139,7 +139,7 @@ function ensureCss() {
 #readerBody .cv-gutter{flex:none;position:sticky;left:0;z-index:1;padding:10px 10px 10px 14px;
   box-sizing:border-box;background:var(--cv-bg);color:var(--cv-gutter);white-space:pre;
   text-align:right;user-select:none;
-  border-right:1px solid rgba(128,128,128,0.35);/* color-mix 的退路（舊瀏覽器）：先給一條素色邊 */
+  border-right:1px solid rgba(128,128,128,0.35);/* plain-color fallback for old browsers without color-mix */
   border-right:1px solid color-mix(in srgb,var(--cv-gutter) 30%,transparent);}
 #readerBody .cv-code{flex:1;margin:0;padding:10px 14px;box-sizing:border-box;white-space:pre;
   min-width:max-content;background:transparent;border:0;border-radius:0;
@@ -193,7 +193,7 @@ function syncControls() {
     const p = currentPalette();
     sw.style.background = p.bg;
     sw.innerHTML = '';
-    for (const [txt, color] of [['fn', p.keyword], ['"str"', p.string], ['42', p.number], ['// 註解', p.comment]]) {
+    for (const [txt, color] of [['fn', p.keyword], ['"str"', p.string], ['42', p.number], [t('ctSwComment'), p.comment]]) {
       const s = document.createElement('span');
       s.style.color = color;
       s.textContent = txt;

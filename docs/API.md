@@ -146,11 +146,12 @@ Reads are free-for-scope by design; writes are guarded. Aside from the pinned li
 - `POST /api/save {path, content, baseMtime, baseSize}` → 從閱讀區把編輯內容寫回（只收 UTF-8、≤5MB、文字類）。原子寫入（同資料夾 `.rdtmp-*` 暫存＋改名，Windows EBUSY 短重試），保留磁碟原檔的 BOM 與主要換行（CRLF 檔仍是 CRLF）。`baseMtime`／`baseSize` 是編輯起點的版本：磁碟上的檔已經變了（例如 AI 剛寫入）就回 `409 {error:'conflict', content, mtime, size}` 且**一個字都不寫**，由前端跳差異對話框；成功回 `{ok, size, mtime, bom, crlf, undoable}`，舊版進復原堆疊（>2MB 不存）。
 - `POST /api/pin` body `{path, pinned}` → 更新釘選
 - `POST /api/pile {paths:[…], title?, source?}` → 把一組檔交成一疊（`{id, title, paths, source, createdAt}`，記憶體＋`config.json` 旁的 `piles.json`，只留最近 20 疊）。去重複、不合格路徑丟掉並列在 `dropped`（全不合格 400）、超過 500 檔 400、空標題用第一個檔名。防護同 `/api/project`（同源 `Origin` 或無 `Origin` ＋ `X-RiffleDesk-CLI: 1`），只 stat 不寫檔。前端收到 `pile` SSE 事件只跳提示／通知**不搶畫面**，左欄列出最近的疊，`/?pile=<id>` 直接開。`GET /api/pile?id=…` 回 `{ok, id, title, files:[同 list 欄位], missing}`；`GET /api/piles` 回清單（新→舊）。
-- `GET /api/convos?days=N` → AI 對話清單（掃 Claude Code `~/.claude/projects/*/*.jsonl` 與 Codex `~/.codex*/sessions/**/*.jsonl` 的 Write/Edit/apply_patch 記錄；最新在前，只回 metadata＋fileCount 不回落差的檔案清單）→ `{ok, days, convos:[{id, agent, title, project, started, updated, fileCount}], scanned, ms}`
+- `GET /api/convos?days=N` → AI 對話清單（掃 Claude Code `~/.claude/projects/*/*.jsonl`、Codex `~/.codex*/sessions/**/rollout-*.jsonl`、Gemini CLI `~/.gemini/tmp/*/chats/**`、Cline/Roo/Kilo 的 VS Code globalStorage `tasks/*/api_conversation_history.json`、Pi `~/.pi/agent/sessions/**/*.jsonl`、Grok Build `~/.grok/sessions/*/*/updates.jsonl` 的寫檔紀錄；工具明細與來源見 [docs/ai-sources.md](ai-sources.md)；最新在前，只回 metadata＋fileCount 不回落差的檔案清單）→ `{ok, days, convos:[{id, agent, title, project, started, updated, fileCount}], scanned, ms}`；`agent` ∈ `claude|codex|gemini|cline|roo|kilo|pi|grok`
 - `GET /api/convo?id=<agent>:<session>` → 該對話寫過的檔案（同 `/api/list` 檔案欄位，按首次寫入排序，只回還存在的檔案）→ `{ok, id, title, files, ms}`
 - `GET /api/recent?hours=N&exts=…` → 最近 N 小時所有對話寫過的檔案（同 `/api/list` 欄位＋`convoId`/`convoTitle`/`firstAt`/`lastAt`，最新在前；`exts` 語意同 `/api/list`）
+- `GET /api/recentmod?hours=N&exts=…` → 「最近改動（不確定是誰改的）」：標記專案資料夾（有 AGENTS.md/CLAUDE.md/GEMINI.md、.claude/.cursor/.git 子目錄、或同層 ≥5 個 Markdown）裡 mtime 在窗內的檔案，扣掉各 AI 對話寫過的；只用既有索引查（`indexed:false` 表示索引沒跑就回空）→ `{ok, hours, indexed, files:[同 /api/list 檔案欄位], ms}`
 - `GET /api/whichconvo?path=…` → 哪些對話寫過這個檔案（最新在前）→ `{ok, path, convos:[…同 /api/convos 項目]}`
-- 對話掃描跨平台（`os.homedir()`）、串流逐行解析不整檔 JSON.parse，以 (size,mtime) 快取；`config.json` 可用 `convoRoots: [{kind:'claude'|'codex', dir}]` 自訂來源（不設＝預設；`[]`＝關閉掃描）
+- 對話掃描跨平台（`os.homedir()`）、串流逐行解析不整檔 JSON.parse（Cline 系列的整檔 JSON 例外，上限 128MB），以 (size,mtime) 快取；`config.json` 可用 `convoRoots: [{kind:'claude'|'codex'|'gemini'|'cline'|'roo'|'kilo'|'pi'|'grok', dir}]` 自訂來源（不設＝預設；`[]`＝關閉掃描）
 
 路徑安全與威脅模型（在單人本機工具的定位下）：
 

@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-L9ZiMNZGXaZeZpdtR/opDdnOgsAWvAbET7rH1cKeVySxaaiCNl9RB86UruTMt+eA' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data: blob:; img-src 'self' data: blob: https:; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'">
-<link rel="icon" href="data:,">
-<title>3D 檔案瀏覽器</title>
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#121417">
+<title>3D 檔案瀏覽器</title> <!-- zh-scan-ok: title 是提前可見的佔位，i18n.js applyStatic 會用 t('brand') 重設 document.title -->
 <style>
   /* ------------------------------------------------ theme tokens
      暗（預設）：深灰底（非純黑）＋暖白字（非純白），對比約 11~12:1，清楚但字邊不發光。
@@ -81,7 +83,7 @@
   #noview .nrow.binary .nthumb { visibility: hidden; }
   #noview .nname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #noview .nmeta { flex: none; color: var(--fg-dim); font-size: 11px; }
-  body.no3d-mode #viewBar { display: none; }   /* 視角按鈕是 3D 專屬 */
+  body.no3d-mode #viewBar, body.no3d-mode #btnViewHome { display: none; }   /* 視角是 3D 專屬 */
   /* 3D 跑到一半顯卡驅動重置（webglcontextlost）：同一張說明卡蓋在卡片欄上，樹和閱讀區照用 */
   #glnotice { display: none; position: fixed; top: 44px; bottom: 0; z-index: 6;
     padding: 28px 24px; overflow-y: auto; box-sizing: border-box; background: var(--panel-bg); }
@@ -108,6 +110,21 @@
     -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--fl, 0px), #000 calc(100% - var(--fr, 0px)), transparent 100%);
             mask-image: linear-gradient(90deg, transparent 0, #000 var(--fl, 0px), #000 calc(100% - var(--fr, 0px)), transparent 100%); }
   #chips::-webkit-scrollbar { display: none; }
+  /* 檔案／分頁 兩段式切換：一個外框包兩顆鈕，現在的模式亮底 */
+  #modeSeg { display: flex; flex: none; border: 1px solid var(--input-border); border-radius: 20px;
+    overflow: hidden; background: var(--input-bg); }
+  #modeSeg .chip { border: 0; border-radius: 0; background: transparent; }
+  #modeSeg .chip + .chip { border-left: 1px solid var(--input-border); }
+  #modeSeg .chip.on { background: var(--accent); color: var(--accent-fg); }
+  /* 分頁模式下類型 chips／排序沒有意義（卡不是檔案）：整格藏起來，回檔案模式就回來 */
+  body.tabs-on #chips, body.tabs-on #sortSel, body.tabs-on #chipSel { display: none; }
+  /* 檔案模式搜尋時「分頁也有符合」的提示條（點它帶著同一個字切到分頁模式） */
+  #tabStrip { position: fixed; top: 50px; left: 50%; transform: translateX(-50%); z-index: 35;
+    color: var(--fg); border: 1px solid var(--accent);
+    border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+    background: var(--input-bg);
+  }
+  #tabStrip:hover { border-color: var(--fg); }
   .chip {
     flex: none; border: 1px solid var(--input-border); background: var(--input-bg); color: var(--chip-fg);
     border-radius: 20px; padding: 4px 11px; font-size: 12px; cursor: pointer;
@@ -120,8 +137,14 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #sortSel, #fontSel { flex: none; background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
     border-radius: 6px; padding: 4px 6px; font-size: 12px; cursor: pointer; }
-  /* 視角按鈕列：卡堆左下角（右下是調參） */
-  #viewBar { position: fixed; bottom: 30px; z-index: 11; display: flex; gap: 6px; }
+  /* 視角提示按鈕列：卡堆左下角（右下是調參）；只在視角偏離「我的視角」時淡入 */
+  #viewBar { position: fixed; bottom: 30px; z-index: 11; display: none; gap: 6px;
+    opacity: 0; transition: opacity .18s; }
+  #viewBar.on { display: flex; }
+  #viewBar.on.show { opacity: 1; }
+  /* 淡入／淡出途中（opacity 0）還不吃滑鼠，免得點到隱形按鈕 */
+  #viewBar:not(.show) { pointer-events: none; }
+  #viewBar.on.narrow { display: none; }   /* 卡堆欄太窄就不佔位 */
   #viewBar button { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
     border-radius: 6px; padding: 3px 9px; font-size: 12px; cursor: pointer; opacity: 0.85; }
   #viewBar button:hover { border-color: var(--accent); opacity: 1; }
@@ -275,15 +298,40 @@
   #reader.open { display: flex; }
   #reader.show { opacity: 1; }
   #readerHeader {
-    display: flex; align-items: center; gap: 8px; padding: 7px 10px; flex: none;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 7px 10px; flex: none;
     background: var(--panel-head); border-bottom: 1px solid var(--panel-border); user-select: none;
   }
   #readerKind { font-size: 11px; color: #fff; border-radius: 4px; padding: 2px 7px;
     background: #888; flex: none; }
+  #readerHeadText { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
   #readerTitle { font-weight: 650; overflow: hidden; white-space: nowrap;
     text-overflow: ellipsis; min-width: 52px; color: var(--heading); }
   #readerBtns button { padding: 0 5px; }
-  #readerMeta { color: var(--panel-dim); font-size: 12px; flex: none; }
+  #readerMeta { color: var(--panel-dim); font-size: 12px; flex: none; min-width: 0; }
+
+  /* 分頁預覽的標題列：標題自己一列（最多 2 行，超過省略），網域＋網址在第二列，
+     網址單行省略、滑過看全文、點了複製。任何欄寬都不會被右緣裁掉。 */
+  #reader { container-type: inline-size; }
+  #readerHeader.tabhead { align-items: flex-start; }
+  #readerHeader.tabhead #readerHeadText { flex-direction: column; align-items: stretch;
+    gap: 3px; flex: 1 1 160px; }
+  #readerHeader.tabhead #readerTitle { white-space: normal; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-width: 0; }
+  #readerHeader.tabhead #readerMeta { display: flex; align-items: baseline; gap: 6px;
+    max-width: 100%; min-width: 0; }
+  #readerHeader.tabhead .tabdomain { flex: none; max-width: 45%; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  #readerHeader.tabhead .taburl { flex: 1 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+    text-decoration: underline dotted; }
+  #readerHeader.tabhead .taburl:hover { color: var(--fg); }
+  /* 窄欄（<520px）：第 1 列＝TAB 徽章＋右上角圖示鈕，標題與網址整組換到下面吃滿寬——
+     標題優先佔寬、網域也不被擠成碎片，兩者永不互相重疊。 */
+  @container (max-width: 520px) {
+    #readerHeader.tabhead #readerKind { order: 1; }
+    #readerHeader.tabhead #readerBtns { order: 2; margin-left: auto; }
+    #readerHeader.tabhead #readerHeadText { order: 3; flex-basis: 100%; }
+  }
   #readerBtns { margin-left: auto; display: flex; gap: 4px; flex: none; }
   #readerBtns button {
     border: 0; background: var(--btn-bg); color: var(--btn-fg); min-width: 27px; height: 26px;
@@ -444,9 +492,13 @@
     background: var(--panel-bg); color: var(--panel-fg); border: 1px solid var(--panel-border);
     box-shadow: 0 14px 40px var(--shadow); }
   #hint.on { display: block; }
+  /* 提示卡不擋點擊：它正好壓在卡堆中央（置中在堆視區），吃事件的話第一張卡會點不到；
+     代價是提示文字不能被圈選（滑鼠直接穿到下面的卡）——只有資訊價值，接受。
+     所以只剩「知道了」鈕要 pointer-events:auto 回來。 */
+  #hint { pointer-events: none; }
   #hint .ttl { font-weight: 650; color: var(--heading); margin-bottom: 4px; }
   #hint .foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; color: var(--panel-dim); font-size: 12px; }
-  #hint .foot button { margin-left: auto; border: 0; background: var(--accent); color: var(--accent-fg);
+  #hint .foot button { pointer-events: auto; margin-left: auto; border: 0; background: var(--accent); color: var(--accent-fg);
     border-radius: 6px; padding: 4px 14px; cursor: pointer; font-size: 12px; }
   ul.help { margin: 0; padding-left: 18px; line-height: 1.65; }
 
@@ -464,6 +516,10 @@
     border-radius: 6px; padding: 5px 8px; cursor: pointer; font-size: 12px; }
   #settings .seg button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
   #settings #fontSel, #settings #codeThemeSel { width: 100%; max-width: none; }
+  #settings #copyAiMax, #settings #copyAiNum { width: 100%; max-width: none; background: var(--input-bg);
+    color: var(--fg); border: 1px solid var(--input-border); border-radius: 6px; padding: 4px 6px;
+    font-size: 12px; cursor: pointer; }
+  #settings #copyAiNum { margin-top: 6px; cursor: text; }
   #settings #codeThemeSel { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
     border-radius: 6px; padding: 4px 6px; font-size: 12px; cursor: pointer; }
   .cts-swatch { margin-top: 6px; border-radius: 6px; border: 1px solid var(--input-border);
@@ -489,6 +545,34 @@
   #readerBody { position: relative; }
   #readerBody .proj-line { position: absolute; left: 0; right: 0; height: 0;
     border-top: 2px solid var(--accent); opacity: .7; pointer-events: none; }
+
+  /* 瀏覽器分頁模式（tabs.js）：閱讀區的分頁檢視。工具列分兩組——左＝文字／DOM 切換，
+     右＝動作鈕；兩組各自可換行、右組靠右，窄欄時整組掉到下一列，永不裁切、不重疊。 */
+  #readerBody .tabview-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin-bottom: 10px; min-width: 0; }
+  #readerBody .tabview-seg { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  #readerBody .tabview-act { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0;
+    margin-left: auto; }
+  #readerBody .tabseg, #readerBody .tabact { border: 1px solid var(--input-border); background: var(--input-bg);
+    color: var(--fg); border-radius: 6px; padding: 4px 12px; font-size: 12.5px; cursor: pointer;
+    max-width: 100%; white-space: nowrap; }
+  #readerBody .tabseg.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #readerBody .tabseg:disabled, #readerBody .tabact:disabled { opacity: .45; cursor: default; }
+  #readerBody .tabshot { display: block; max-width: 100%; border-radius: 8px; margin-bottom: 10px;
+    border: 1px solid var(--panel-border); }
+  #readerBody .tabstat { color: var(--fg-dim); font-size: 13px; margin: 8px 0; }
+  #readerBody pre.tabtext { white-space: pre-wrap; word-break: break-word; font-family: inherit;
+    font-size: 14px; line-height: 1.65; margin: 0; }
+  #readerBody .tabview-box .codeview { max-height: none; }
+  /* 說明卡面（內建頁／休眠分頁）：跟卡面同一套說法，右欄不做成空白 */
+  #readerBody .tabexplain { display: flex; flex-direction: column; align-items: center;
+    text-align: center; gap: 8px; padding: 40px 16px 20px; color: var(--fg-dim); }
+  #readerBody .tabexplain .tp-hint-icon { font-size: 44px; line-height: 1; }
+  #readerBody .tabexplain .tp-hint-h { font-size: 16px; font-weight: 600; color: var(--fg); }
+  #readerBody .tabexplain .tp-hint-p { font-size: 13.5px; max-width: 34em; }
+  #readerBody .tabexplain + .tabview-bar { justify-content: center; margin: 0 0 6px; }
+  /* file:// 分頁的檔案內容：直接沿用檔案模式的內文樣式（md／表格／圖片都在裡面） */
+  #readerBody .tabfile-body { margin-top: 4px; }
 
   /* 快速跳轉捲軸（scrub.js）：檔案多時出現在卡堆右側 */
   #scrub { position: fixed; z-index: 12; width: 14px; }
@@ -516,6 +600,49 @@
   #pathBar .copy { flex: none; border: 1px solid var(--border); background: var(--bar); color: var(--fg-dim);
     border-radius: 6px; padding: 1px 7px; cursor: pointer; font-size: 12px; }
   #pathBar .copy:hover { color: var(--fg); border-color: var(--accent); }
+
+  /* ------------------------------------------------ panel 模式（?mode=panel：擴充側邊欄）
+     精簡快翻：只有工具列（搜尋＋chips＋分頁鈕）＋卡堆，左欄樹與右欄閱讀面板不載入。 */
+  body.panel-mode #tree, body.panel-mode #splitter, body.panel-mode #splitter2,
+  body.panel-mode #reader, body.panel-mode #settings, body.panel-mode #hint,
+  body.panel-mode #viewBar, body.panel-mode #selBar, body.panel-mode #scrub,
+  body.panel-mode #params { display: none !important; }
+  /* 工具列改兩列（側邊欄常常只有 ~400px 寬）：
+     第 1 列＝搜尋框（獨佔整列）；第 2 列＝類型下拉（左）＋檔案／分頁切換（右），不重疊不截斷 */
+  body.panel-mode #toolbar { gap: 6px 8px; padding: 5px 8px; height: 82px;
+    flex-wrap: wrap; align-content: flex-start; box-sizing: border-box; }
+  body.panel-mode #toolbar .brand { display: none; }
+  body.panel-mode #sortSel, body.panel-mode #status, body.panel-mode #btnTree,
+  body.panel-mode #btnFull, body.panel-mode #btnUndoTop, body.panel-mode #btnSelAll,
+  body.panel-mode #btnRefresh, body.panel-mode #btnSettings, body.panel-mode #btnViewHome { display: none; }
+  body.panel-mode #searchBox { flex: 1 1 100%; min-width: 0; width: 100%; order: 1; }
+  /* 類型 chips 收起來變下拉；下拉吃第 2 列剩下的寬度 */
+  body.panel-mode #chips { display: none; }
+  body.panel-mode #chipSel { display: block; order: 2; flex: 1 1 auto; min-width: 0;
+    background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
+    border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+  body.panel-mode #chipSel:disabled { opacity: .45; }
+  body.panel-mode #modeSeg { order: 3; flex: none; margin-left: auto; }
+  /* 回到完整畫面鈕：只有側邊欄看得到（預設 display:none）；擠在檔案／網頁切換右邊 */
+  body.panel-mode #btnBackToFull { display: block; order: 4; flex: none; }
+  /* 分頁模式下連 panel 的類型下拉也要藏（上面 body.panel-mode 那條寫在更後面，要靠雙 class 壓過它） */
+  body.panel-mode.tabs-on #chips, body.panel-mode.tabs-on #sortSel, body.panel-mode.tabs-on #chipSel { display: none; }
+  body.panel-mode #gl { top: calc(82px * var(--panelZoom, 1)); }
+  body.panel-mode #pathBar { top: 90px; }
+  body.panel-mode #tabStrip { top: 88px; }
+  /* 側邊欄 Ctrl+滾輪＝介面縮放（--panelZoom，0.7–1.6）：只縮 DOM 介面，#gl 卡堆畫布排除——
+     three.js 的 raycast 座標與貼圖解析度才不會錯位；畫布頂緣用上面的 calc 跟著頂列視覺高度 */
+  body.panel-mode > :not(#gl) { zoom: var(--panelZoom, 1); }
+  /* 側邊欄內讀檔：閱讀面板改整欄覆層蓋住卡堆（含頂列）；多一個 .open 讓特異性壓過上面的
+     display:none !important 那條 */
+  body.panel-mode #reader.open { display: flex !important; top: 0; left: 0; right: 0; bottom: 0;
+    width: auto; border-radius: 0; border-left: 0; border-right: 0; }
+  body.panel-mode #btnSize { display: none; }   /* 覆層沒有欄寬可切 */
+  /* 「← 返回」鈕：完整版藏著，側邊欄才顯示 */
+  #btnPanelBack { display: none; flex: none; border: 0; background: var(--btn-bg); color: var(--btn-fg);
+    height: 26px; border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 10px; }
+  body.panel-mode #btnPanelBack { display: block; }
+  #btnPanelBack:hover { background: var(--btn-hover); }
 
   /* ------------------------------------------------ params panel */
   #params { position: fixed; right: 10px; bottom: 10px; z-index: 25; font-size: 12px;
@@ -559,15 +686,28 @@
   <span class="brand" data-i18n="brand">3D 檔案瀏覽器</span>
   <input id="searchBox" type="search" data-i18n-ph="searchPh" placeholder="過濾目前資料夾檔名…">
   <div id="chips"></div>
+  <select id="chipSel" data-i18n-title="chipTypeDrop" hidden></select>
   <select id="sortSel" data-i18n-title="sortTitle"></select>
+  <div id="modeSeg" role="group" aria-label="mode">
+    <button id="btnModeFiles" class="chip" data-i18n="modeFiles" data-i18n-title="modeFilesTitle">檔案</button>
+    <button id="btnTabs" class="chip" data-i18n="tabsBtn" data-i18n-title="tabsModeTitle">分頁</button>
+  </div>
+  <!-- 只有側邊欄看得見（預設 hidden）：回到完整畫面＝聚焦主視窗＋定位到這張卡＋收起側欄 -->
+  <button id="btnBackToFull" class="tbtn" hidden data-i18n-label="backFullLabel" data-i18n-title="backFullTitle">⤢</button>
+  <!-- 完整版工具列（擴充連上才顯示）：原地切側邊欄模式；右欄在預覽網頁時順便把 Chrome 切過去 -->
+  <button id="btnSidePanel" class="tbtn" hidden data-i18n-title="sidePanelBtnTitle">◫</button>
   <span id="status" data-i18n="loading">載入中…</span>
   <button id="btnTree" class="tbtn" data-i18n-title="treeHideTitle">◧</button>
   <button id="btnFull" class="tbtn" data-i18n-title="fullTitle">⛶</button>
   <button id="btnUndoTop" class="tbtn" data-i18n-title="undoTitle">↶</button>
-  <button id="btnSelAll" class="tbtn" aria-pressed="false" aria-label="全選">▣</button>
+  <button id="btnSelAll" class="tbtn" aria-pressed="false" data-i18n-label="selAllAria">▣</button>
   <button id="btnRefresh" class="tbtn" data-i18n-title="refreshTitle">⟳</button>
+  <button id="btnInstall" class="tbtn" hidden data-i18n-title="installTitle">⤓</button>
+  <button id="btnViewHome" class="tbtn" data-i18n-label="viewHomeLabel" data-i18n-title="viewHomeTitle">⟲</button>
   <button id="btnSettings" class="tbtn" data-i18n-title="setTitle">⚙</button>
 </div>
+<!-- 檔案搜尋時「分頁也有符合」提示條（main.js 管顯隱與點擊） -->
+<button id="tabStrip" hidden></button>
 
 <div id="settings">
   <div class="sgrp"><div class="slab" data-i18n="setTheme"></div>
@@ -575,7 +715,7 @@
   <div class="sgrp"><div class="slab" data-i18n="setFont"></div>
     <select id="fontSel" data-i18n-title="fontTitle"></select></div>
   <div class="sgrp"><div class="slab" data-i18n="setLang"></div>
-    <div class="seg"><button id="btnLangZh">中文</button><button id="btnLangEn">English</button></div></div>
+    <div class="seg"><button id="btnLangZh">中文</button><!-- zh-scan-ok: 語言鈕專有名詞要保持本地寫法 --><button id="btnLangEn">English</button></div></div>
   <div class="sgrp"><div class="slab" data-i18n="setCodeTheme"></div>
     <select id="codeThemeSel" data-i18n-title="codeThemeTitle"></select>
     <div class="cts-swatch" id="codeThemeSwatch" aria-hidden="true"></div></div>
@@ -585,6 +725,10 @@
   <div class="sgrp"><div class="slab" data-i18n="setIndexSlab"></div>
     <label class="again"><input type="checkbox" id="idxContent"> <span data-i18n="setIndexContent"></span></label>
     <div class="idxnote" id="idxNote"></div></div>
+  <div class="sgrp"><div class="slab" data-i18n="copyAiSlab"></div>
+    <select id="copyAiMax"></select>
+    <input id="copyAiNum" type="number" min="500" max="200000" step="500" hidden>
+    <div class="idxnote" data-i18n="copyAiNote"></div></div>
   <div class="sgrp"><div class="slab" data-i18n="setProjSlab"></div>
     <label class="again"><input type="checkbox" id="projNotify"> <span data-i18n="setProjNotify"></span></label>
     <label class="again"><input type="checkbox" id="projSound"> <span data-i18n="setProjSound"></span></label>
@@ -604,9 +748,13 @@
 
 <div id="reader">
   <div id="readerHeader">
+    <!-- 側邊欄專用（平時藏著，只在 body.panel-mode 顯示）：閱讀覆層整欄蓋住卡堆時的返回鈕 -->
+    <button id="btnPanelBack" data-i18n="panelBack" data-i18n-title="panelBackTitle">← 返回</button>
     <span id="readerKind">md</span>
-    <span id="readerTitle">—</span>
-    <span id="readerMeta"></span>
+    <div id="readerHeadText">
+      <span id="readerTitle">—</span>
+      <span id="readerMeta"></span>
+    </div>
     <div id="readerBtns">
       <button id="btnFind" data-i18n-title="findTitle">🔍</button>
       <button id="btnEdit" data-i18n-title="editTitle">✎</button>
@@ -615,14 +763,14 @@
       <button id="btnCancelEdit" hidden data-i18n-title="cancelEditTitle">⊘</button>
       <button id="btnMdPreview" hidden data-i18n-title="mdPreviewTitle">👁</button>
       <!-- 這兩顆按鈕的文案跟狀態走（執行中↔預覽），由 reader.js syncHtmlButtons 設定；不掛 data-i18n，免得切語言時被蓋回預設字 -->
-      <button id="btnRun" hidden>▶ 執行網頁程式</button>
-      <button id="btnSource" hidden>&lt;/&gt; 原始碼</button>
-      <button id="btnRevise" hidden data-i18n-title="reviseTitle">✎ 改版</button>
+      <button id="btnRun" hidden>▶ 執行網頁程式</button> <!-- zh-scan-ok: 佔位文字，reader.js syncHtmlButtons 以 i18n 字串覆寫 -->
+      <button id="btnSource" hidden>&lt;/&gt; 原始碼</button> <!-- zh-scan-ok: 佔位文字，reader.js syncHtmlButtons 以 i18n 字串覆寫 -->
+      <button id="btnRevise" hidden data-i18n-title="reviseTitle">✎ 改版</button> <!-- zh-scan-ok: 佔位文字，reader.js syncHtmlButtons 以 i18n 字串覆寫 -->
       <!-- 程式碼檢視的 two controls（配色＋換行）：只在程式碼／JSON／HTML 原始碼打開時出現，由 codetheme.js 控制 -->
       <select id="codeThemeMini" hidden data-i18n-title="codeThemeTitle"></select>
       <button id="btnWrap" hidden data-i18n-title="wrapTitle">↩</button>
       <button id="btnMore" data-i18n-title="moreTitle">⋯</button>
-      <button id="btnSize" title="切換閱讀區大小：1/3 → 2/3 → 全螢幕 → 1/3">1/3</button>
+      <button id="btnSize" title="切換閱讀區大小：1/3 → 2/3 → 全螢幕 → 1/3">1/3</button> <!-- zh-scan-ok: title 佔位，main.js 每次切語言用 i18n 字串重設 -->
       <button id="btnClose" data-i18n-title="closeTitle" title="放回（Esc）">✕</button>
     </div>
   </div>
@@ -651,9 +799,8 @@
 </div>
 
 <div id="viewBar">
-  <button id="btnViewHome" data-i18n="viewHome" data-i18n-title="viewHomeTitle"></button>
-  <button id="btnViewFav" data-i18n="viewFav" data-i18n-title="viewFavTitle"></button>
   <button id="btnViewSave" data-i18n="viewSave" data-i18n-title="viewSaveTitle"></button>
+  <button id="btnViewFav" data-i18n="viewFav" data-i18n-title="viewFavTitle"></button>
 </div>
 <div id="toast"></div>
 <div id="selBar"><span class="n"></span><button data-act="copy"></button><button data-act="trash" class="danger"></button><button data-act="all"></button><button data-act="clear"></button><span class="hint"></span></div>

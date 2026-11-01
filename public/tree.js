@@ -413,6 +413,7 @@ function samePath(a, b) { return norm(a) === norm(b); }
 // 選取 key：真資料夾認路徑（大小寫不敏感）；偽資料夾認種類＋id（recent<hours> / convo:<id>）
 function crowKey(meta) {
   if (meta && meta.pile) return 'pile:' + meta.id;
+  if (meta && meta.changedHours != null) return 'changed' + Number(meta.changedHours);
   return meta && meta.hours != null ? 'recent' + Number(meta.hours) : 'convo:' + (meta && meta.id);
 }
 function selKey(sel) { return !sel ? '' : (sel.kind === 'crow' ? 'crow:' + crowKey(sel.meta) : 'folder:' + norm(sel.path)); }

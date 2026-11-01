@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title data-i18n-page="sideTitle">RiffleDesk 側邊欄</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body { background: #121417; color: #e8e4d8; font: 13px/1.6 system-ui, "Microsoft JhengHei", "Segoe UI", sans-serif; }
+  #frame { width: 100%; height: 100%; border: 0; display: none; }
+  #down { display: none; padding: 16px 16px 24px; max-width: 440px; }
+  #down h2 { font-size: 15px; margin: 2px 0 10px; font-weight: 600; }
+  #down ol { padding-left: 20px; margin: 6px 0 12px; }
+  #down li { margin: 4px 0; }
+  #down code { background: #1d2127; padding: 1px 5px; border-radius: 4px; color: #d7e3f4; }
+  #down .note { color: #9aa3ad; font-size: 12px; margin: 12px 0 8px; }
+  #retry { background: #2c3138; color: #e8e4d8; border: 1px solid #3a424c; border-radius: 6px; padding: 5px 14px; cursor: pointer; font: inherit; }
+  #retry:hover { background: #343b44; }
+</style>
+</head>
+<body>
+<!-- 下面的中文只是 i18n.js 跑起來前的臨時字；RD_I18N.applyStatic 會整頁換掉 -->
+<iframe id="frame" data-i18n-title="sideFrameTitle" title="RiffleDesk 面板" allow="clipboard-read; clipboard-write"></iframe>
+<div id="down">
+  <h2 data-i18n="sideDownH">RiffleDesk 伺服器還沒啟動</h2>
+  <ol>
+    <li data-i18n="sideStep1">打開 RiffleDesk 的資料夾</li>
+    <li data-i18n="sideStep2">雙擊 <code>start.bat</code>（或在資料夾裡跑 <code>npm start</code>）</li>
+    <li data-i18n="sideStep3">這裡會自己連上（每 3 秒重試一次）</li>
+  </ol>
+  <p class="note" id="backNote" data-i18n-html="sideBackNote">回到完整視窗：<b>Alt+Shift+R</b>（改快捷鍵：chrome://extensions/shortcuts）</p>
+  <button id="retry" type="button" data-i18n="sideRetry">立即重試</button>
+</div>
+<script src="defaults.js"></script>
+<script src="i18n.js"></script>
+<script src="sidepanel.js"></script>
+</body>
+</html>

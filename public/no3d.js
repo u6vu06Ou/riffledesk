@@ -157,6 +157,28 @@ export class No3DView {
     this.notifySelection();
   }
 
+  // 使用者正在捲（分頁模式的推送要避開這段時間）
+  scrollBusy() { return false; }
+
+  // 清單就地更新：不重置捲動位置——以最前面那張為錨，它不見了就停在原索引
+  updateFilesInPlace(files, anchorPath) {
+    const oldFocus = Math.round(this.scrollCur);
+    this.files = Array.isArray(files) ? files.slice() : [];
+    this.view = this.applyNameFilter(this.files);
+    this.total = this.files.length;
+    this.hasMore = false;
+    this.moreLoader = null;
+    this.loadingMore = false;
+    const at = anchorPath ? this.view.findIndex(f => f.path === anchorPath) : -1;
+    const idx = at >= 0 ? at : Math.min(oldFocus, Math.max(0, this.view.length - 1));
+    this.scrollCur = this.scrollTarget = idx;
+    this.el.scrollTop = idx * ROW_H;
+    this._render(false);
+    this._updateCount();
+    this.notifySelection();
+    return [];
+  }
+
   maybeRequestMore() {
     if (!this.hasMore || this.loadingMore || !this.moreLoader) return;
     if (this.nameFilter && this.nameFilter.trim()) return;
@@ -388,6 +410,8 @@ export class No3DView {
   favView() { return null; }
   saveFavView() { return null; }
   goFavView() { return false; }
+  viewDiffers() { return false; }
+  notifyView() {}
   avgFps() { return 0; }
   resetFps() {}
   slotTex() { return []; }

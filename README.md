@@ -85,9 +85,28 @@ A ready-made skill that teaches an agent this loop lives in [`skills/riffledesk/
 
 - **Loopback only.** The server listens on `127.0.0.1`, replies only to loopback `Host` headers, rejects cross-site API calls (`Sec-Fetch-Site` + `Origin` on every write), and sends `Cross-Origin-Resource-Policy: same-origin`, so a random web page cannot read your files through it.
 - **No telemetry, no cloud.** Nothing leaves the machine. (three.js, marked, DOMPurify and SheetJS load from a CDN with pinned versions and SRI, so the page itself needs network; highlight.js is vendored and works offline.)
-- **The transcripts it reads.** To build the "recent from AI" and conversation lists, the server reads *locally* the write/edit records in Claude Code's `~/.claude/projects/*/*.jsonl` and Codex's `~/.codex*/sessions/**/*.jsonl`. Only file paths, titles and timestamps are extracted, nothing is uploaded, and the parse is cached by size+mtime.
+- **The transcripts it reads.** To build the "recent from AI" and conversation lists, the server reads *locally* the write/edit records of the supported tools (Claude Code, Codex, Gemini CLI, Cline / Roo Code / Kilo Code, Pi, Grok Build — locations in the table below). Only file paths, titles and timestamps are extracted, nothing is uploaded, and the parse is cached by size+mtime.
 - **Turning it off.** `convoRoots: []` in `config.json` disables transcript scanning entirely; `convoRoots: [{kind, dir}]` points it at other directories. Delete `index.db*` to wipe every path name the index holds.
 - **Browsing scope** defaults to all local drives plus your home documents. That is wide on purpose; `config.json` `roots` narrows it.
+
+## Which AI tools are supported
+
+The conversation sidebar reads the tools' own record files — **the terminal or IDE you launched them from does not matter**, only where each tool writes its history.
+
+| Tool | Supported | Records |
+|---|---|---|
+| Claude Code (CLI, VS Code & JetBrains extensions, desktop App's Code tab) | ✅ | `~/.claude/projects/*/*.jsonl` |
+| Codex (CLI, desktop App, VS Code extension) | ✅ | `~/.codex*/sessions/**/rollout-*.jsonl` |
+| Gemini CLI | ✅ | `~/.gemini/tmp/<project>/chats/**` (`GEMINI_CLI_HOME` relocates the base) |
+| Cline / Roo Code / Kilo Code (VS Code extensions, legacy layout) | ✅ | VS Code globalStorage `*/tasks/<taskId>/api_conversation_history.json` |
+| Pi (badlogic/pi-mono) | ✅ | `~/.pi/agent/sessions/**/*.jsonl` (`PI_CODING_AGENT_SESSION_DIR` relocates) |
+| Grok Build (xAI's official coding agent) | ✅ | `~/.grok/sessions/*/*/updates.jsonl` (`GROK_HOME` relocates) |
+| Cursor, Windsurf, GitHub Copilot, opencode (current), Kilo Code (2026 rewrite), superagent-ai/grok-cli | ❌ | SQLite / private formats — not parsed |
+| Aider | ❌ | per-project `.aider.chat.history.md`; covered by "Recently modified (source unknown)" instead |
+
+Note: Cursor and Windsurf's own histories are not parsed, but Cline-family extensions installed inside them are still scanned (their `globalStorage` is on the scan list).
+
+The full audit — every checked location, format, source link and confidence — is in [docs/ai-sources.md](docs/ai-sources.md). For an unsupported tool, either have the assistant run `riffledesk open <file>` / `riffledesk show …`, or use the sidebar's **最近改動（不確定是誰改的）(Recently modified, source unknown)** row: files changed in the last 7 days inside marker-project folders (AGENTS.md / CLAUDE.md / GEMINI.md / .claude / .cursor / .git, or >=5 Markdown files in one folder), minus everything a supported AI conversation provably wrote. It is answered from the existing index (mtime), never another disk scan, and it needs the index running.
 
 ## Limits
 

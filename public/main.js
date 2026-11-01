@@ -1,5 +1,5 @@
 // glue: toolbar (chips/search), folder tree wiring, 3-pane layout state machine.
-import { P, TOOLBAR_H, apiJson, clamp, themeNow, setTheme, fmtDate, refreshLook } from './util.js';
+import { P, TOOLBAR_H, toolbarH, apiJson, clamp, themeNow, setTheme, fmtDate, refreshLook } from './util.js';
 import { initCodeTheme } from './codetheme.js';
 // 卡片視區（StackScene）用動態 import：three.js CDN 掛掉／WebGL 建不起來時要能改顯示說明卡，
 // 所以不能在最上面靜態 import stack.js（一失敗整個 main.js 都不會跑，左欄與閱讀也一起死）
@@ -13,6 +13,9 @@ import { initLive } from './live.js';
 import { createUndo, newGroup } from './undo.js';
 import { initMirror } from './mirror.js';
 import { initProject, initProjectSettings, handleProject, handlePile, clickPileToast, setHiddenForTest, restoreRecent, restorePiles, clickNotification, requestUrlOpen } from './project.js';
+import { TabsMode } from './tabs.js';
+import { TAB_X_ZONE, TAB_AI_ZONE, tabBadgeAt } from './thumbs.js';
+import { copyTabForAI } from './tabcopy.js';
 
 const canvas = document.getElementById('gl');
 const treeEl = document.getElementById('tree');
@@ -21,6 +24,40 @@ const splitter2 = document.getElementById('splitter2');
 const searchBox = document.getElementById('searchBox');
 const chipsEl = document.getElementById('chips');
 const statusEl = document.getElementById('status');
+
+// ?mode=panel＝擴充側邊欄（Chrome sidePanel／Firefox sidebar）裡的精簡快翻模式：
+// 只有搜尋框＋類型下拉＋卡堆：沒有左欄樹；閱讀面板平時不參與版面，點檔案卡＝就地開整欄閱讀覆層。
+const PANEL = new URLSearchParams(location.search).get('mode') === 'panel';
+if (PANEL) document.body.classList.add('panel-mode');
+// ---- 側邊欄介面縮放（Chrome 側欄沒有瀏覽器縮放）：Ctrl+滾輪／Ctrl+±／Ctrl+0 ----
+// 只縮 DOM 介面：body 掛 --panelZoom，CSS 對 #gl 以外的頂層元素套 zoom——卡堆畫布本身的
+// raycast 座標與貼圖解析度完全不動（畫布頂緣用 calc 跟著頂列視覺高度走）。畫布上的
+// Ctrl+滾輪走 stack.js 自己的相機遠近，不進這裡；完整版整個不攔（瀏覽器原生縮放）。
+const PANEL_ZOOM_MIN = 0.7, PANEL_ZOOM_MAX = 1.6;
+const PANEL_ZOOM_KEY = 'rd.panelZoom';
+let panelZoom = 1;
+function setPanelZoom(z) {
+  panelZoom = Math.round(Math.min(PANEL_ZOOM_MAX, Math.max(PANEL_ZOOM_MIN, z)) * 100) / 100;
+  try { localStorage.setItem(PANEL_ZOOM_KEY, String(panelZoom)); } catch (_) { /* 沒儲存空間就算了 */ }
+  document.body.style.setProperty('--panelZoom', String(panelZoom));
+  dispatchEvent(new Event('resize'));   // 頂列視覺高度變了：卡堆畫布的 top／高度全部重算到位
+}
+if (PANEL) {
+  try {
+    const z = parseFloat(localStorage.getItem(PANEL_ZOOM_KEY));
+    if (Number.isFinite(z) && z >= PANEL_ZOOM_MIN && z <= PANEL_ZOOM_MAX) panelZoom = z;
+  } catch (_) { /* 壞資料就回到 1 */ }
+  if (panelZoom !== 1) document.body.style.setProperty('--panelZoom', String(panelZoom));
+  // 卡堆畫布上＝相機遠近（stack.js 的 wheel handler）；其餘地方（頂列、閱讀覆層…）＝介面縮放
+  addEventListener('wheel', e => {
+    if (!e.ctrlKey) return;
+    const tgt = e.target;
+    if (tgt && (tgt === canvas || (tgt.closest && tgt.closest('#gl')))) return;
+    e.preventDefault();
+    const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+    setPanelZoom(panelZoom * Math.exp(-e.deltaY * unit * 0.002));
+  }, { passive: false });
+}
 // 拖分隔線期間 body 掛 .dragging：禁止選取、iframe 不吃滑鼠、游標全域 col-resize
 let dragging = false;
 // 左欄收合狀態（宣告在 setBodyMode 之前：它在這裡就要被讀到）
@@ -62,6 +99,21 @@ function extsParam() {
   return [...set].join(',');
 }
 
+// chips 選取改了之後的共同動作：存檔、重畫 chips/下拉、重載卡堆與資料夾數字
+function applyChips(next) {
+  const same = next.length === chipsOn.length && next.every(id => chipsOn.includes(id));
+  if (same) return;
+  chipsOn = next;
+  try { localStorage.setItem('floderChips2', JSON.stringify(chipsOn)); } catch (_) {}
+  buildChips();
+  // 卡堆先換（使用者在看的是這個），資料夾數字在背景原地更新，不擋畫面
+  if (lockedFolder) loadFolder(lockedFolder);
+  else if (pileState) applyPile();
+  else if (convoState) loadPseudo();          // 偽資料夾（AI 對話區）也照 chips 重新篩
+  refreshConvoCounts();
+  tree.setExts(effectiveExts());
+}
+
 function buildChips() {
   chipsEl.innerHTML = '';
   for (const def of CHIP_DEFS) {
@@ -76,21 +128,31 @@ function buildChips() {
             ? (chipsOn.length > 1 ? chipsOn.filter(id => id !== def.id) : chipsOn)  // 至少保留一個
             : [...chipsOn, def.id])
         : [def.id];
-      // 選取沒變化（例如 Ctrl 點擊唯一保留的那顆）→ 不重建、不重載，避免閃爍與無謂請求
-      const same = next.length === chipsOn.length && next.every(id => chipsOn.includes(id));
-      if (same) return;
-      chipsOn = next;
-      try { localStorage.setItem('floderChips2', JSON.stringify(chipsOn)); } catch (_) {}
-      buildChips();
-      // 卡堆先換（使用者在看的是這個），資料夾數字在背景原地更新，不擋畫面
-      if (lockedFolder) loadFolder(lockedFolder);
-      else if (pileState) applyPile();
-      else if (convoState) loadPseudo();          // 偽資料夾（AI 對話區）也照 chips 重新篩
-      refreshConvoCounts();
-      tree.setExts(effectiveExts());
+      applyChips(next);
     });
     chipsEl.appendChild(b);
   }
+  buildChipSel();
+}
+
+// panel 模式的「類型 ▾」下拉（窄欄放不下九顆 chips）：單選語意，選完即生效。
+// 與 chips 共享 chipsOn 狀態；分頁模式下整個停用（CSS 已藏掉，這裡再 disable 一層給驗收用）
+const chipSel = document.getElementById('chipSel');
+function buildChipSel() {
+  if (!chipSel) return;
+  chipSel.innerHTML = '';
+  for (const def of CHIP_DEFS) {
+    const o = document.createElement('option');
+    o.value = def.id;
+    o.textContent = (def.id === 'all' ? t('chipTypeAll') : def.label);
+    chipSel.appendChild(o);
+  }
+  // 多選（Ctrl 點的）在下拉沒有對應單一值 → 顯示第一個選中的
+  chipSel.value = chipsOn[0] || 'all';
+}
+if (chipSel) {
+  chipSel.title = t('chipTypeDrop');
+  chipSel.addEventListener('change', () => applyChips([chipSel.value]));
 }
 
 // ---------------------------------------------------------------- layout
@@ -132,6 +194,8 @@ function watchContextLoss() {
 }
 const stack = await createCardView();
 const no3d = !!stack.no3d;
+// 側邊欄精簡模式（400px 窄欄）：焦點卡幾乎填滿欄寬，卡內字才讀得到
+if (!no3d && PANEL && typeof stack.setCompactFit === 'function') stack.setCompactFit(true);
 if (no3d) {
   document.body.classList.add('no3d-mode');   // CSS 藏掉 3D 專屬的視角按鈕列；畫布自己藏
   canvas.style.display = 'none';
@@ -165,6 +229,8 @@ function readerRectFor(targetMode) {
 }
 
 function applyFracs(f) {
+  // 側邊欄模式永遠滿寬卡堆：樹與閱讀欄不參與版面（CSS 也藏了）
+  if (PANEL) f = { tree: 0, view: 1, reader: 0 };
   const W = innerWidth;
   treeEl.style.width = Math.round(f.tree * W) + 'px';
   treeEl.style.display = f.tree < 0.005 ? 'none' : '';
@@ -381,6 +447,9 @@ async function loadFolder(path) {
   statusEl.textContent = t('reading');
   try {
     const data = await fetchFolder(path, 0);
+    // 慢回應競態：fetch 期間使用者已切進分頁模式（點分頁鈕／Alt+2／「分頁符合」條）——
+    // 這包舊的資料夾內容落地會把分頁卡堆整堆蓋掉，直接丟掉。
+    if (tabsMode.active) return;
     // 大資料夾只回第一頁（~300 張＋總數）：滑近尾端時由 stack 續頁
     const more = data.hasMore ? {
       total: data.total, hasMore: data.hasMore,
@@ -401,6 +470,7 @@ const tree = new FolderTree(treeEl, {
   // hover 預覽（sel＝樹的唯一選取模型）：真資料夾直接載；偽資料夾（對話/今天/最近7天）走 previewCrow。
   // 都不動「鎖定」——離開左欄時樹會再送一次 lockedSel 讓畫面還原
   onPreview: sel => {
+    if (tabsMode.active) return;   // 分頁模式中 hover 樹不動卡堆；點下（onLock）才離開分頁模式
     previewCrowCancel();
     if (sel.kind === 'crow') {
       if (sel.meta.pile) return openPile(sel.meta.id, tree.selRow(sel));
@@ -409,7 +479,7 @@ const tree = new FolderTree(treeEl, {
     return loadFolder(sel.path);
   },
   // 真正鎖定發生時（滑鼠點、方向鍵 debounce 到點）取消任何還在等的方向鍵載入
-  onLock: sel => { clearTimeout(navTimer); navTimer = null; previewCrowCancel(); exitPseudo(false); dropPile(); lockedFolder = sel.path; return loadFolder(sel.path); },
+  onLock: sel => { clearTimeout(navTimer); navTimer = null; previewCrowCancel(); tabsMode.drop(); exitPseudo(false); dropPile(); lockedFolder = sel.path; return loadFolder(sel.path); },
   onPinChanged: async () => { await tree.boot(); buildConvoSections(); }
 });
 tree.exts = extsParam();
@@ -417,7 +487,7 @@ tree.exts = extsParam();
 // ====================== AI 對話區：「AI 最近給我的」＋「對話」列表 ======================
 // 左樹最上面（快速存取之上）的兩個偽資料夾區塊。來源是本機 AI agent（Claude/Codex）
 // 自己的對話記錄，伺服器 /api/convos 系列端點回來。點下去＝把那份清單載進卡堆。
-let convoState = null;        // 目前卡堆在看的偽資料夾：{kind:'recent',hours} | {kind:'convo',id,title}
+let convoState = null;        // 目前卡堆在看的偽資料夾：{kind:'recent'|'changed',hours} | {kind:'convo',id,title}
 let pileState = null;         // 目前卡堆在看的一疊：{id, title, files}（AI 挑好的清單）
 let pileReturn = null;        // 開疊之前的資料夾：✕／Esc 回那裡
 let convoWrap = null;         // #tree 裡的容器 div
@@ -426,6 +496,13 @@ let convoShowAuto = (() => { try { return localStorage.getItem('riffleConvoAuto'
 let convoShowN = 15;          // 對話列表先列 15 則，「顯示更多」+15
 let convoRowsMeta = [];       // [{row, cnt, id, lastN}]
 let recentRowsMeta = [];      // [{row, cnt, hours, lastN}]
+let changedRowsMeta = [];     // [{row, cnt, changedHours, lastN}] — —「最近改動」列，索引沒跑會整列藏起來
+// 對話標籤：後端 agent id → 給人看的工具名（新增解析器時同步 convos.js KIND_LABEL）
+const AGENT_LABEL = {
+  claude: 'Claude', codex: 'Codex', gemini: 'Gemini',
+  cline: 'Cline', roo: 'Roo Code', kilo: 'Kilo Code', pi: 'Pi', grok: 'Grok Build'
+};
+const agentTag = a => AGENT_LABEL[a] || a;
 const convoFilesCache = new Map();  // convoId -> 完整檔案清單（未按 chips 過濾）
 let convoListCache = { t: 0, data: null };
 
@@ -471,7 +548,7 @@ function applyCrowHide(meta) {
   const hide = tree.hideEmpty && meta.lastN === 0;
   meta.row.style.display = hide ? 'none' : '';
 }
-function applyCrowHides() { for (const m of [...recentRowsMeta, ...convoRowsMeta]) applyCrowHide(m); }
+function applyCrowHides() { for (const m of [...recentRowsMeta, ...changedRowsMeta, ...convoRowsMeta]) applyCrowHide(m); }
 // 樹最上面的「只看有檔案的資料夾」開關切換時，數字沒變也要重判一次藏不藏
 treeEl.addEventListener('change', e => { if (e.target.closest('#treeBar')) setTimeout(applyCrowHides, 0); });
 
@@ -508,6 +585,14 @@ async function buildConvoSections() {
   tree.attachCrow(weekM.row, { hours: 168 });
   wrap.appendChild(todayM.row); wrap.appendChild(weekM.row);
   recentRowsMeta = [todayM, weekM];
+  // 索引檔 mtime 查的「最近改動」：跟上面確定是 AI 寫的分開，來源不可考——扣掉 AI 寫的檔才顯示
+  const changedM = makeCrow({ icon: '📝', label: t('recChanged') });
+  changedM.changedHours = 168;
+  changedM.row.title = t('changedTip');
+  changedM.row.addEventListener('click', () => openChanged(168, changedM.row));
+  tree.attachCrow(changedM.row, { changedHours: 168 });
+  wrap.appendChild(changedM.row);
+  changedRowsMeta = [changedM];
   wrap.appendChild(el('div', 'sec', t('secConvos')));
   const listEl = el('div');
   wrap.appendChild(listEl);
@@ -528,7 +613,7 @@ async function buildConvoSections() {
     const m = makeCrow({
       icon: '💬', date: fmtConvDate(c.updated),
       label: c.title || t('convoNoTitle'),
-      tag: c.agent === 'claude' ? 'Claude' : 'Codex'
+      tag: agentTag(c.agent)
     });
     m.id = c.id; m.lastN = c.fileCount;
     if (c.auto) m.row.classList.add('auto');
@@ -582,6 +667,17 @@ function refreshConvoCounts() {
         applyCrowHide(m);
       }).catch(() => { m.cnt.textContent = ''; });
   }
+  for (const m of changedRowsMeta) {
+    apiJson('/api/recentmod?hours=' + m.changedHours + '&exts=' + encodeURIComponent(effectiveExts()))
+      .then(d => {
+        if (gen !== convoGen || !m.row.isConnected) return;
+        if (d.indexed === false) { m.lastN = 0; m.row.style.display = 'none'; return; }  // 索引沒跑：整列消失
+        m.lastN = (d.files || []).length;
+        m.cnt.textContent = String(m.lastN);
+        m.cnt.classList.toggle('zero', m.lastN === 0);
+        applyCrowHide(m);
+      }).catch(() => { m.cnt.textContent = ''; });
+  }
   for (const m of convoRowsMeta) {
     fetchConvoFiles(m.id)
       .then(files => {
@@ -596,6 +692,7 @@ function refreshConvoCounts() {
 
 function selectCrow(row, crowMeta) {
   clearTimeout(navTimer); navTimer = null;   // 點對話列＝放棄方向鍵還在等的載入
+  tabsMode.drop();               // 分頁模式中點對話列＝離開分頁模式（不還原）
   lockedFolder = null;
   tree.lockCrow(crowMeta, row);              // 鎖定選取＝這列偽資料夾（同時清掉其他 .sel／預覽框）
   endContentSearch();
@@ -623,6 +720,10 @@ async function loadCrowFiles(meta) {
   if (meta.hours != null) {
     const d = await apiJson('/api/recent?hours=' + meta.hours + '&exts=' + encodeURIComponent(effectiveExts()));
     return { files: d.files || [], label: t('pathRecent', { which: meta.hours <= 24 ? t('recToday') : t('recWeek') }) };
+  }
+  if (meta.changedHours != null) {
+    const d = await apiJson('/api/recentmod?hours=' + meta.changedHours + '&exts=' + encodeURIComponent(effectiveExts()));
+    return { files: d.files || [], label: t('pathChanged', { which: meta.changedHours <= 24 ? t('recToday') : t('recWeek') }) };
   }
   const files = (await fetchConvoFiles(meta.id)).filter(chipsAcceptFile);
   return { files, label: t('pathConvo', { title: meta.title || t('convoNoTitle') }) };
@@ -660,6 +761,21 @@ async function openRecent(hours, row) {
   } catch (e) { if (tok === crowLoadTok) statusEl.textContent = t('readFail', { msg: e.message }); }
 }
 
+// 「最近改動（不確定是誰改的）」列：same as openRecent but backed by /api/recentmod
+async function openChanged(hours, row) {
+  selectCrow(row, { changedHours: hours });
+  convoState = { kind: 'changed', hours };
+  const tok = ++crowLoadTok;
+  statusEl.textContent = t('reading');
+  try {
+    const { files, label } = await loadCrowFiles({ changedHours: hours });
+    if (tok !== crowLoadTok) return;
+    stack.setFolder(label, files);
+    showPseudoPath(label);
+    statusEl.textContent = t('fileCount', { path: '', n: files.length });
+  } catch (e) { if (tok === crowLoadTok) statusEl.textContent = t('readFail', { msg: e.message }); }
+}
+
 async function openConvo(c, row) {
   selectCrow(row || null, { id: c.id, title: c.title });
   convoState = { kind: 'convo', id: c.id, title: c.title };
@@ -679,6 +795,9 @@ function loadPseudo() {         // chips 切換／檔案被刪後重載目前的
   if (convoState.kind === 'recent') {
     const row = recentRowsMeta.find(m => m.hours === convoState.hours);
     openRecent(convoState.hours, row ? row.row : null);
+  } else if (convoState.kind === 'changed') {
+    const row = changedRowsMeta.find(m => m.changedHours === convoState.hours);
+    openChanged(convoState.hours, row ? row.row : null);
   } else {
     const m = convoRowsMeta.find(x => x.id === convoState.id);
     openConvo({ id: convoState.id, title: convoState.title }, m ? m.row : null);
@@ -720,6 +839,7 @@ function applyPile() {
 
 async function openPile(id, row) {
   if (!id) return false;
+  tabsMode.drop();   // 分頁模式中開一疊＝離開分頁模式（不還原）
   statusEl.textContent = t('reading');
   let d;
   try { d = await apiJson('/api/pile?id=' + encodeURIComponent(id)); }
@@ -783,6 +903,74 @@ function closePile() {
 }
 // ==================== end AI 整理的疊 ====================
 
+// ====================== 瀏覽器分頁模式（extension/ 擴充把 Chrome 分頁推給 server） ======================
+// 進場記住現在在看什麼（資料夾／對話／一疊），離開時還原；運作本體在 tabs.js。
+const tabsMode = new TabsMode({
+  stack, statusEl,
+  panel: PANEL,                     // 側邊欄模式：分頁卡多畫 ⧉ 複製給 AI、點卡＝切分頁
+  pathBar: () => document.getElementById('pathBar'),
+  canvas: () => document.getElementById('gl'),
+  toast: (m, act) => toast(m, act),
+  // 側邊欄網頁卡上的 ⧉＝複製給 AI（跟完整版右欄預覽的按鈕同一條流程，tabcopy.js）
+  copyForAi: f => { copyTabForAI(f.tab, { toast: m => toast(m) }).catch(() => {}); },
+  setBtnOn: on => {
+    document.getElementById('btnTabs').classList.toggle('on', on);
+    document.getElementById('btnModeFiles').classList.toggle('on', !on);
+    document.body.classList.toggle('tabs-on', on);
+    if (chipSel) chipSel.disabled = on;   // 分頁沒有副檔名可篩：類型下拉停用（CSS 已藏）
+    if (on) hideTabStrip();               // 進分頁模式了：檔案搜尋的提示條收起來
+  },
+  // 記住檔案模式當下的狀態：去哪個資料夾＋滾到哪一張（chips／排序本來就各自保留在 localStorage）
+  getReturn: () => ({
+    scroll: Math.round(stack.scrollTarget),
+    ...(convoState ? { kind: 'crow', meta: { ...convoState } }
+      : (pileState ? { kind: 'pile', id: pileState.id }
+      : (lockedFolder ? { kind: 'folder', path: lockedFolder } : { kind: 'none' })))
+  }),
+  clearCurrent() {
+    exitPseudo(true);
+    dropPile();
+    convoState = null;
+    lockedFolder = null;
+    previewCrowCancel();
+  },
+  restore(back) {
+    if (back && back.kind === 'folder') { tree.lock(back.path); }
+    else if (back && back.kind === 'crow') {
+      if (back.meta.kind === 'recent') openRecent(back.meta.hours, null);
+      else openConvo({ id: back.meta.id, title: back.meta.title }, null);
+    }
+    else if (back && back.kind === 'pile') { openPile(back.id, null); }
+    else {
+      const first = (tree.roots && tree.roots[0]) || (tree.drives && tree.drives[0] && tree.drives[0].path);
+      if (first) tree.lock(first);
+      else { showPath(''); stack.setFolder('', []); }
+    }
+    // 回到檔案模式時跳回離開時看到的那張卡（等清單載入後再跳，大資料夾續頁也不會跳錯）
+    if (back && back.scroll > 0) restoreScrollTo(back.scroll);
+  }
+});
+// 等卡堆真的有內容（資料夾載進來）才把滾動位置設回去；最多等 4 秒
+function restoreScrollTo(idx) {
+  const t0 = performance.now();
+  const step = () => {
+    if (tabsMode.active) return;                 // 又切回分頁了：不動
+    if (stack.files.length) {
+      const i = Math.min(idx, stack.files.length - 1);
+      if (i > 0) { stack.scrollCur = i; stack.scrollTarget = i; stack.scrollVel = 0; }
+      return;
+    }
+    if (performance.now() - t0 < 4000) setTimeout(step, 120);
+  };
+  step();
+}
+document.getElementById('btnTabs').addEventListener('click', () => tabsMode.toggle());
+document.getElementById('btnModeFiles').addEventListener('click', () => { if (tabsMode.active) tabsMode.exit(); });
+document.getElementById('btnModeFiles').classList.add('on');
+// 側邊欄「點卡連動」與 ?tabs=1 開機：搬到檔尾（tabStrip 等 const 初始化完）才跑，
+// 見檔尾 bootUrlTabs()。
+// ==================== end 瀏覽器分頁模式 ====================
+
 // ---------------------------------------------------------------- card → reader
 let clickT0 = 0;
 let clickToTextMs = 0;
@@ -793,15 +981,72 @@ stack.getReaderRect = () => {
   return readerRectFor(target);
 };
 
-stack.onCardClick = file => {
+// ---------------------- panel 模式：點檔案卡＝就地開整欄閱讀覆層 ----------------------------
+// 側邊欄沒有第三欄可放：閱讀面板改當覆層整欄蓋住卡堆（CSS：body.panel-mode #reader.open 滿版），
+// 頂列多一顆「← 返回」（Esc／✕ 同效果）。卡堆原地不滾——收掉覆層後還停在同一張。
+
+// 開閱讀區看一張卡：檔案卡由 stack 的抽卡流程帶進來；分頁卡（完整版）點卡即到此＝右欄預覽
+function openInReader(file) {
   clickT0 = performance.now();
+  // 提示卡是點擊穿透的（index.html #hint）：它會一直蓋在卡堆中央，
+  // 既然開始看卡了就不再需要它——順手收掉，也免得它的 Esc 多佔一次。
+  hideTip();
   stack.readingPath = file.path;               // 卡堆裡這張加外框、微微抬高
   stack.poke();
+  if (PANEL) {
+    reader.setOpen(true);                      // panel 的 .open＝整欄覆層（index.html 的 panel CSS）
+    reader.show();
+    reader.open(file).then(() => { clickToTextMs = Math.round(performance.now() - clickT0); });
+    return;
+  }
   if (mode === 'twocol') setMode('threecol');
   reader.show();                               // panel fades in over the flying card
   reader.open(file).then(() => {
     clickToTextMs = Math.round(performance.now() - clickT0);
   });
+}
+stack.onCardClick = openInReader;
+
+// 右欄網頁預覽的「側欄模式」鈕：交給 tabsMode（趁點擊手勢直送擴充，見 tabs.js）
+reader.enterSidePanel = tab => tabsMode.enterSidePanel(tab);
+
+// ---------------------------------------------------------------- 工具列「原地切側欄」鈕
+// 完整版才用（側欄自己不用開側欄），擴充連上才顯現：每 30 秒問一次 /api/tabs?meta=1，
+// SSE 推播與開機時各補一次；沒連上就藏（不會出現按了才說不行的死按鈕）。
+// 點了：右欄正在預覽某個網頁 → 順便把 Chrome 切到那個網頁；沒有 → 只開側欄不動目前分頁。
+const btnSidePanel = document.getElementById('btnSidePanel');
+async function refreshExtLive() {
+  if (!btnSidePanel) return;
+  let alive = false, extId = '';
+  try {
+    const d = await apiJson('/api/tabs?meta=1');
+    alive = !!d.extAlive;
+    extId = (typeof d.extId === 'string') ? d.extId : '';
+  } catch (_) { alive = false; }
+  if (extId) tabsMode.extId = extId;   // 沒進過分頁模式也能直送擴充
+  btnSidePanel.hidden = PANEL || !alive;
+}
+if (btnSidePanel && !PANEL) {
+  btnSidePanel.addEventListener('click', () => {
+    // 不做任何前置 await：sendMessage 要趕在使用者手勢效期內送出去
+    const cur = (reader.el.classList.contains('show') && reader.file && reader.file.tab && !reader.file.tab.note)
+      ? reader.file.tab : null;
+    tabsMode.enterSidePanel(cur);
+  });
+  refreshExtLive();
+  setInterval(refreshExtLive, 30000);
+}
+
+// 分頁卡：卡面右上角的 ×（uv 熱區）＝關掉那個網頁（全部模式都有畫；側欄的 ⧉＝複製給 AI）。
+// 除此之外——完整版點分頁卡＝右欄預覽（截圖＋文字／DOM，頂列有「切到這個網頁」），不切分頁；
+// 側邊欄點分頁卡＝把主視窗 Chrome 切到那個分頁。安裝說明卡例外：照舊開閱讀區看安裝步驟。
+stack.onClickIntercept = (file, uv) => {
+  if (tabsMode.active && file.tab) {
+    if (tabsMode.handleBadgeHit(file, uv)) return true;
+    if (PANEL && !file.tab.note) { tabsMode.activateTab(file.tab); return true; }
+    openInReader(file); return true;
+  }
+  return false;
 };
 
 // reader buttons
@@ -819,6 +1064,8 @@ updateSizeBtn();
 document.getElementById('btnTree').addEventListener('click', () => setTreeCollapsed(!treeCollapsed));
 syncTreeBtn();
 document.getElementById('btnClose').addEventListener('click', () => putBack());
+// 側邊欄閱讀覆層的「← 返回」：跟 ✕／Esc 同一件事
+document.getElementById('btnPanelBack').addEventListener('click', () => putBack());
 
 function putBack() {
   // 編輯中有未存的內容 → 先跳頁內提示（存檔／放棄／繼續編輯），不直接關
@@ -833,6 +1080,7 @@ function doPutBack() {
   reader.hide();
   stack.readingPath = null;
   stack.returnExtracted(false);
+  if (PANEL) { reader.setOpen(false); return; }   // 側邊欄：覆層直接收掉，版面模式本來就是兩欄
   setMode('twocol');
 }
 
@@ -857,7 +1105,7 @@ function navableRows() {
     if (row.classList.contains('pile-row')) {
       out.push({ kind: 'pile', row });
     } else if (row.classList.contains('crow')) {
-      const m = recentRowsMeta.find(x => x.row === row) || convoRowsMeta.find(x => x.row === row);
+      const m = recentRowsMeta.find(x => x.row === row) || changedRowsMeta.find(x => x.row === row) || convoRowsMeta.find(x => x.row === row);
       if (m) out.push({ kind: 'crow', row, meta: m });
     } else {
       const node = tree.rowNode.get(row);
@@ -972,6 +1220,19 @@ addEventListener('keydown', e => {
     return;
   }
   if (e.key === 'Escape' && (closeMenu() || closeDlg() || closeSettings() || hideTip())) return;   // 先關右鍵選單／對話框
+  // 檔案／分頁 切換：Alt+1＝檔案、Alt+2＝分頁（跟工具列的兩段鈕同一件事；輸入框裡也照吃）
+  if (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && (e.code === 'Digit1' || e.code === 'Numpad1' || e.code === 'Digit2' || e.code === 'Numpad2')) {
+    e.preventDefault();
+    if (e.code === 'Digit1' || e.code === 'Numpad1') { if (tabsMode.active) tabsMode.exit(); }
+    else if (!tabsMode.active) tabsMode.enter();
+    return;
+  }
+  // 側邊欄介面縮放鍵：Ctrl+0 還原、Ctrl+= 放大、Ctrl+- 縮小（完整版不攔，留給瀏覽器原生縮放）
+  if (PANEL && mod && !e.altKey) {
+    if (e.key === '0') { e.preventDefault(); setPanelZoom(1); return; }
+    if (e.key === '=' || e.key === '+') { e.preventDefault(); setPanelZoom(panelZoom * 1.1); return; }
+    if (e.key === '-' || e.key === '_') { e.preventDefault(); setPanelZoom(panelZoom / 1.1); return; }
+  }
   // 輸入框不吃快捷鍵；但下拉選單（排序、字型）選完焦點會留在上面，Esc 要照樣能退出閱讀
   if (tag === 'SELECT' && e.key === 'Escape') e.target.blur();
   else if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -1004,19 +1265,25 @@ addEventListener('keydown', e => {
   // 編輯器內 Ctrl+Z＝打字復原（CodeJar 自己處理，這裡不要搶）
   if (reader.editing() && (e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) return;
   if (undo.onKeydown(e)) { e.preventDefault(); return; }   // Ctrl+Z＝復原上一個改名/刪除
-  if (e.key === 'Delete' && stack.selected.size) { batchTrash(stack.selectedFiles()); return; }
+  if (e.key === 'Delete' && stack.selected.size && !tabsMode.active) { batchTrash(stack.selectedFiles()); return; }
+  // 側邊欄的閱讀覆層最優先收（覆層蓋在卡堆上，選取清除和欄位階梯都排在它後面）
+  if (e.key === 'Escape' && PANEL && reader.el.classList.contains('open')) { putBack(); return; }
   if (e.key === 'Escape' && mode === 'twocol' && stack.selected.size) { stack.clearSelection(); return; }
   if (e.key === 'Escape') {
     // a pile sits in twocol as well, so it gets its own step before the layout ladder
     if (pileState && mode === 'twocol') { closePile(); return; }
+    // 分頁模式也是兩欄：Esc（右欄沒開時）＝離開分頁回到原本的資料夾／對話／疊
+    if (tabsMode.active && mode === 'twocol') { tabsMode.exit(); return; }
     if (mode === 'full') setMode('wide');
     else if (mode === 'wide') setMode('threecol');
     else if (pileState) closePile();   // reading inside a pile: first Esc puts the file back, this one leaves
     else if (mode === 'threecol') putBack();
   } else if (e.key === 'f' || e.key === 'F') {
-    if (isReading()) setMode(mode === 'full' ? 'threecol' : 'full');
+    if (!PANEL && isReading()) setMode(mode === 'full' ? 'threecol' : 'full');
+  } else if (e.key === 't' || e.key === 'T') {
+    tabsMode.toggle();               // T ＝ 分頁模式開關（跟工具列「分頁」鈕同一件事）
   } else if (e.key === '2') {
-    if (isReading()) setMode(mode === 'wide' ? 'threecol' : 'wide');
+    if (!PANEL && isReading()) setMode(mode === 'wide' ? 'threecol' : 'wide');
   }
 });
 
@@ -1041,6 +1308,7 @@ async function contentSearch(q) {
     if (r.status === 404) { statusEl.textContent = t('searchUnavailable'); return; }
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.error || ('http ' + r.status));
+    if (tabsMode.active) return;   // 搜尋回應晚到：使用者已切去分頁模式，別蓋掉卡堆
     contentQuery = q;
     reader.highlight = q;
     stack.nameFilter = '';
@@ -1055,11 +1323,58 @@ function endContentSearch() {
   contentQuery = ''; reader.highlight = '';
   if (lockedFolder) loadFolder(lockedFolder);
 }
+// 檔案模式搜尋時，分頁也有符合 → 卡堆上方浮一條「分頁符合 N 個 → 看分頁」，
+// 點了帶著同一個搜尋字切進分頁模式（分頁模式搜尋比對標題／網址／內文／摘要）。
+const tabStrip = document.getElementById('tabStrip');
+let tabStripTimer = null;
+function hideTabStrip() { if (tabStrip) tabStrip.hidden = true; }
+async function refreshTabMatchStrip() {
+  if (!tabStrip) return;
+  const q = searchBox.value.trim().toLowerCase();
+  if (tabsMode.active || !q) return hideTabStrip();
+  let d = null;
+  try { d = await apiJson('/api/tabs'); } catch (_) { d = null; }
+  if (tabsMode.active || searchBox.value.trim().toLowerCase() !== q) return;   // 打字又變了：這輪不作數
+  const list = (d && d.extAlive && Array.isArray(d.tabs)) ? d.tabs : [];
+  const n = list.filter(tb =>
+    String(tb.title || '').toLowerCase().includes(q) ||
+    String(tb.url || '').toLowerCase().includes(q) ||
+    String(tb.text || '').toLowerCase().includes(q) ||
+    String(tb.desc || '').toLowerCase().includes(q)).length;
+  if (!n) return hideTabStrip();
+  tabStrip.textContent = t('tabMatchStrip', { n });
+  tabStrip.hidden = false;
+}
+if (tabStrip) {
+  tabStrip.addEventListener('click', () => {
+    const q = searchBox.value.trim();
+    hideTabStrip();
+    if (tabsMode.active) tabsMode.setQuery(q);
+    else tabsMode.enterWithQuery(q);
+  });
+}
+
 searchBox.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); contentSearch(searchBox.value.trim()); }
-  else if (e.key === 'Escape') { searchBox.value = ''; stack.setNameFilter(''); endContentSearch(); searchBox.blur(); }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    // 分頁模式：Enter 不打內文搜尋——篩選即時生效了（內文也在比對範圍）
+    if (tabsMode.active) return;
+    contentSearch(searchBox.value.trim());
+  }
+  else if (e.key === 'Escape') {
+    searchBox.value = '';
+    if (tabsMode.active) tabsMode.setQuery('');
+    stack.setNameFilter('');
+    endContentSearch();
+    searchBox.blur();
+  }
 });
-searchBox.addEventListener('input', () => { if (!searchBox.value.trim()) endContentSearch(); });
+searchBox.addEventListener('input', () => {
+  if (tabsMode.active) { tabsMode.setQuery(searchBox.value); return; }
+  clearTimeout(tabStripTimer);
+  tabStripTimer = setTimeout(refreshTabMatchStrip, 350);
+  if (!searchBox.value.trim()) endContentSearch();
+});
 
 // 排序
 {
@@ -1102,17 +1417,49 @@ function toast(msg, action) {
   toast._t = setTimeout(() => el.classList.remove('on'), action ? 6000 : 1800);
 }
 {
-  const fav = document.getElementById('btnViewFav');
-  const mark = () => fav.classList.toggle('has', !!stack.favView());
+  // 視角提示列：平常不顯示；相機偏離「我的視角」（沒存過＝偏離預設視角）才淡入
+  // 「存成我的視角」＋「回我的視角」（沒存過只顯示存）。按存／按回／視角回到存的一樣就淡出。
+  const bar = document.getElementById('viewBar');
+  const saveBtn = document.getElementById('btnViewSave');
+  const favBtn = document.getElementById('btnViewFav');
+  const FADE_MS = 200;               // 跟 index.html #viewBar 的 .18s 一起看
+  let hideTimer = null, rafId = null, last = null;
+  const sync = differsIn => {
+    // differs 由 stack.notifyView 傳進來；undefined（初次、存檔後）就自己算
+    const differs = !no3d && (differsIn === undefined ? stack.viewDiffers() : differsIn);
+    const has = !!stack.favView();
+    if (differs === last && has === favBtn.classList.contains('has')) return;   // 狀態沒變就不動 DOM
+    last = differs;
+    clearTimeout(hideTimer);
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    favBtn.hidden = !has;
+    favBtn.classList.toggle('has', has);
+    if (differs) {
+      bar.classList.add('on');
+      // 兩次 rAF：先讓 display:flex 真的生效，opacity 才會從 0 漸變（同一次 recalc 會直接跳出來）
+      rafId = requestAnimationFrame(() => {
+        rafId = requestAnimationFrame(() => { rafId = null; if (last) bar.classList.add('show'); });
+      });
+    } else {
+      bar.classList.remove('show');               // 先淡出，200ms 後才真的拆掉
+      hideTimer = setTimeout(() => bar.classList.remove('on'), FADE_MS);
+    }
+  };
+  stack.onViewChange = sync;
   document.getElementById('btnViewHome').addEventListener('click', () => stack.resetView());
-  fav.addEventListener('click', () => { if (!stack.goFavView()) toast(t('viewFavNone')); });
-  document.getElementById('btnViewSave').addEventListener('click', () => { stack.saveFavView(); mark(); toast(t('viewSaved')); });
-  mark();
+  favBtn.addEventListener('click', () => { if (!stack.goFavView()) toast(t('viewFavNone')); });
+  saveBtn.addEventListener('click', () => {
+    if (stack.saveFavView()) toast(t('viewSaved'));
+    else toast(t('viewSaveFail'));
+    sync();
+  });
+  sync();
 }
 // 檔名搜尋期間放寬 chips：chips 只載入勾選副檔名，搜尋常有「明明有這檔卻搜不到」；
 // 有搜尋字就放寬成全部檔（name filter 仍只看檔名），清空立即回到 chips 視圖。
 let searchBroad = false, searchTimer = null;
 searchBox.addEventListener('input', () => {
+  if (tabsMode.active) return;   // 分頁模式的篩選由 tabsMode.setQuery 處理（標題／網址／內文）
   stack.setNameFilter(searchBox.value);
   clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
@@ -1125,15 +1472,66 @@ searchBox.addEventListener('input', () => {
   }, 250);
 });
 
+// ---------------------------------------------------------------- 安裝成 App（PWA）
+// manifest＋sw.js 都齊時 Chrome 才丟 beforeinstallprompt：按鈕平常藏著，可裝才出現。
+// 裝成 App 後 RiffleDesk 是獨立視窗（點分頁卡切的是原本的瀏覽器視窗），
+// 擴充的 Alt+Shift+R 可把它叫回最前面（提示寫在按鈕 title 裡）。
+let deferredInstall = null;
+addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredInstall = e;
+  const b = document.getElementById('btnInstall');
+  if (b) b.hidden = false;
+});
+const btnInstall = document.getElementById('btnInstall');
+if (btnInstall) btnInstall.addEventListener('click', async () => {
+  if (!deferredInstall) return;
+  deferredInstall.prompt();
+  try { await deferredInstall.userChoice; } catch (_) {}
+  deferredInstall = null;
+  btnInstall.hidden = true;
+});
+// 只為可安裝而存在的 service worker（不快取任何東西，fetch 原樣放行）
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
 // ---------------------------------------------------------------- boot
 buildChips();
 applyFracs(fracs);
 
 (async () => {
   try {
-    const d = await tree.boot();
+    // 側欄帶 ?tabs=1 開局（點卡連動／「側欄模式」鈕開出來的）＝一進來就是要翻分頁卡：
+    // 最優先進分頁模式，不等資料夾樹、也不先鋪「今天的 AI 檔」卡堆——先鋪再換堆的話，
+    // setFolder 會把使用者在等清單那段時間滾出的位置清零（強制拉回第一張），還白畫
+    // 一輪檔案縮圖佔住主執行緒（開局頓 1–2 秒的主因）。樹和離開分頁的落點在背景補。
+    if (PANEL && new URLSearchParams(location.search).get('tabs') === '1') {
+      await bootUrlTabs();
+      panelLandingBoot();   // fire-and-forget：不擋卡堆，也不動卡堆
+      return;
+    }
+    let d;
+    if (PANEL) {
+      // 側邊欄（無 tabs 參數）：首屏卡堆＝今天的 AI 檔。它不靠樹，跟樹並行抓，
+      // 樹只做「今天沒檔案」時的備援落點。
+      const treeP = tree.boot();
+      treeP.catch(() => {});   // 早窗口的 unhandledrejection 吃掉；錯誤由下方 await 統一進 catch
+      await openRecent(24, null);
+      d = await treeP;
+    } else {
+      d = await tree.boot();
+    }
     buildConvoSections();   // AI 對話區（最近給我的＋對話列表）掛在快速存取之上
     const first = (d.roots && d.roots[0]) || (d.drives && d.drives[0] && d.drives[0].path);
+    if (PANEL) {
+      // 側邊欄預設看「AI 最近給我的：今天」（快翻是這個欄位最重要的用途）；
+      // 今天掃不到檔案（或對話紀錄整個關掉）就照舊退到第一個根目錄。
+      if (!stack.files.length) convoState = null;
+      else {
+        statusEl.textContent = t('fileCount', { n: stack.files.length });
+        await bootUrlOpen(); await bootUrlPile();
+        return;
+      }
+    }
     if (!first) statusEl.textContent = t('noRoots');
     else if (!lockedFolder) {
       // 開機自動鎖第一個根；但 boot 期間若已有人搶先鎖了別的資料夾（手速快／自動化），
@@ -1147,11 +1545,94 @@ applyFracs(fracs);
   } catch (err) {
     statusEl.textContent = t('initFail', { msg: err.message });
     await bootUrlOpen();    // 樹還在半殘狀態，但讀檔只需要 lock＋API，值得一試
+    await bootUrlTabs();    // ?tabs=1 同理：分頁模式只吃 /api/tabs，不靠樹
     return;
   }
   await bootUrlOpen();      // ?open=… 要等預設資料夾載完，否則會被它的載入蓋掉
   await bootUrlPile();      // ?pile=… 同理：預設資料夾先載好當「回到原本資料夾」的目標
+  await bootUrlTabs();      // ?tabs=1：同上，最後進分頁模式（panel 與完整視窗都認）
 })();
+
+// ---------------------------------------------------------------- 網址進分頁模式（?tabs=1[&tabfocus=N]）
+// 側邊欄「點卡連動」：擴充趁手勢把側欄開在這種網址上——直接進分頁模式並捲到剛點的那張。
+// 完整視窗也認同一個網址：擴充「回到完整畫面」找不到既有視窗要新開時，就開
+// ?tabs=1&tabfocus=，落地直接是定位好的分頁模式。
+// 完整視窗＝boot 最後跑（預設內容先載好，enter 才記得到「離開時回到哪裡」，早跑會被
+// openRecent/lock 的清場蓋掉）。側欄 tabs 開局反過來＝最先跑（見 boot 段開頭的註解），
+// 落點由 panelLandingBoot() 在背景補。兩條路都不會在模組評估期呼叫本函式，
+// 所以 tabStrip 等前半段 const 早已初始化完，沒有 TDZ 問題。
+async function bootUrlTabs() {
+  const sp = new URLSearchParams(location.search);
+  if (sp.get('tabs') !== '1') return;
+  // 跟 ?open=/?pile= 一致：進場後立刻把參數從網址剝掉，重新整理不會再帶著過期的 tabfocus 跳
+  const tfRaw = sp.get('tabfocus');
+  const tabId = (tfRaw != null && tfRaw !== '' && Number.isFinite(+tfRaw))
+    ? Math.max(0, Math.floor(+tfRaw)) : null;
+  sp.delete('tabs'); sp.delete('tabfocus');
+  const qs = sp.toString();
+  try { history.replaceState(history.state, '', location.pathname + (qs ? '?' + qs : '') + location.hash); } catch (_) {}
+  try { await tabsMode.enterAt(tabId); } catch (err) { console.warn('tabs boot failed', err); }
+}
+// ?tabs=1 側欄開局的背景補課：資料夾樹（離開分頁模式要鎖資料夾用）＋預設落點。
+// 全程不碰卡堆——分頁卡已經在螢幕上，任何 setFolder 都會把使用者滾到的位置清掉。
+// 落點規則跟無 tabs 參數的開局一致：今天有 AI 給的檔就回那一列，沒有就第一個根。
+async function panelLandingBoot() {
+  try {
+    const d = await tree.boot();
+    buildConvoSections();
+    const first = (d.roots && d.roots[0]) || (d.drives && d.drives[0] && d.drives[0].path);
+    let back = null;
+    try {
+      const r = await loadCrowFiles({ hours: 24 });
+      if (r.files && r.files.length) back = { kind: 'crow', meta: { kind: 'recent', hours: 24 }, scroll: 0 };
+    } catch (_) { /* 掃不到就退回根目錄 */ }
+    if (!back && first) back = { kind: 'folder', path: first, scroll: 0 };
+    if (back && tabsMode.active && (!tabsMode.returnTo || tabsMode.returnTo.kind === 'none')) tabsMode.returnTo = back;
+    // 分頁模式沒進成（enterAt 掛了）：別讓側欄停在空白——直接把落點內容載上來
+    if (!tabsMode.active && back) {
+      if (back.kind === 'crow') await openRecent(back.meta.hours, null);
+      else if (back.kind === 'folder') await tree.lock(back.path);
+    }
+  } catch (_) { /* 落點補不上就算了：離開分頁時 restore 的 none 路徑會退到第一個根 */ }
+}
+// 側欄已開著時，背景轉來 {rifflePanel:'tab-focus'} 叫這裡捲到那張卡
+if (PANEL) {
+  addEventListener('message', ev => {
+    if (ev.source !== window.parent) return;    // 只有外層側欄頁能叫這裡捲
+    const d = ev && ev.data;
+    if (!d || d.rifflePanel !== 'tab-focus') return;
+    tabsMode.focusTab(d.tabId);
+  });
+}
+
+// ---------------------------------------------------------------- 側欄「回到完整畫面」
+// 頂列 ⤢ 鈕（按鈕提示也寫著 Alt+Shift+R）：聚焦既有 RiffleDesk 完整視窗（沒有就開一個
+// 停在同一張卡）＋收起側欄——全部交給擴充做（直送訊息，跟點卡同路線）；擴充不在
+// （手動 ?mode=panel 打開的分頁）就退回只定位：POST /api/tabs/focus 請完整視窗捲過去。
+// 另：每 0.7s 把「側欄現在看哪張卡」回報給擴充，Alt+Shift+R 在側欄 focus 時照它定位。
+if (PANEL) {
+  const bf = document.getElementById('btnBackToFull');
+  if (bf) bf.addEventListener('click', async () => {
+    const front = tabsMode.active ? tabsMode.frontTabId() : 0;
+    const r = await tabsMode._extOp({ type: 'riffle-back-to-full', tabId: front }, 1500);
+    if (r && r.ok === true) return;      // 擴充收下了：聚焦＋定位＋收側欄它全包
+    if (front) {
+      apiJson('/api/tabs/focus', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tabId: front })
+      }).catch(() => {});
+    }
+  });
+  let lastFrontPing = 0;
+  setInterval(() => {
+    if (!tabsMode.active) return;
+    const id = tabsMode.frontTabId();
+    if (id && id !== lastFrontPing) {
+      lastFrontPing = id;
+      tabsMode._extOp({ type: 'riffle-panel-front', tabId: id }, 800);
+    }
+  }, 700);
+}
 
 // ---------------------------------------------------------------- 網址開一疊（?pile=<id>）
 // 沒有分頁可推時 CLI 改開這種網址。跟 ?open= 一樣立刻把參數拿掉；打不開就留一句提示。
@@ -1191,6 +1672,10 @@ if (stack.renderer) stack.renderer.render(stack.scene, stack.camera);   // 沒�
 // ---------------------------------------------------------------- test hooks
 window.__dbg = {
   stack: () => stack.dbg(),
+  panelMode: () => PANEL,
+  uiZoom: () => panelZoom,
+  setUiZoom: z => setPanelZoom(z),
+  badgeZone: (u, v) => tabBadgeAt(u, v, { ai: PANEL }),
   selProbe: () => {
     // e2e（滾動不順／卡堆上不畫框）：逐幀取樣每張卡畫面上的位置與大小。
     // 用「檔名」認卡（滾動時 slot 會換綁，fileIdx 會變）。
@@ -1229,7 +1714,7 @@ window.__dbg = {
     P[k] = v; stack.poke();
   },
   cardScreen: i => stack.cardScreen(i),
-  viewRect: () => ({ x: stack.viewCss.x, y: TOOLBAR_H, w: stack.viewCss.w, h: canvas.clientHeight || innerHeight - TOOLBAR_H }),
+  viewRect: () => ({ x: stack.viewCss.x, y: toolbarH(), w: stack.viewCss.w, h: canvas.clientHeight || innerHeight - toolbarH() }),
   viewGL: () => stack.glViewportCss(),
   viewGLRaw: () => stack.glViewportRaw(),
   slotTex: () => stack.slotTex(),
@@ -1271,7 +1756,7 @@ window.__dbg = {
   chipsOn: () => [...chipsOn],
   lockedFolder: () => lockedFolder,
   // 唯一的「目前選取」：偽資料夾回 'crow:…'，真資料夾回路徑（e2e 驗 hover/鎖定還原用）
-  lockedSel: () => convoState ? (convoState.kind === 'recent' ? 'crow:recent' + convoState.hours : 'crow:convo:' + convoState.id) : lockedFolder,
+  lockedSel: () => convoState ? (convoState.kind === 'recent' ? 'crow:recent' + convoState.hours : (convoState.kind === 'changed' ? 'crow:changed' + convoState.hours : 'crow:convo:' + convoState.id)) : lockedFolder,
   crowRect: text => {
     const r = [...document.querySelectorAll('#convos .crow')].find(x => x.textContent.includes(text));
     if (!r || r.offsetParent === null) return null;
@@ -1300,7 +1785,7 @@ window.__dbg = {
   lockFolder: path => tree.lock(path),
   // 方向鍵＝走左樹的測試鉤子
   nav: dir => navMove(dir),
-  navRows: () => navableRows().map(r => r.kind === 'crow' ? ('crow:' + (r.meta.hours != null ? 'recent' + r.meta.hours : r.meta.id)) : r.row.dataset.path),
+  navRows: () => navableRows().map(r => r.kind === 'crow' ? ('crow:' + (r.meta.hours != null ? 'recent' + r.meta.hours : (r.meta.changedHours != null ? 'changed' + r.meta.changedHours : r.meta.id))) : r.row.dataset.path),
   focusIdx: () => clamp(Math.round(stack.scrollCur), 0, Math.max(0, stack.view.length - 1)),
   fitGap: () => Math.abs(stack.fitCur.dist - stack.fitTarget.dist) + stack.fitCur.target.distanceTo(stack.fitTarget.target),
   openReader: i => (mode !== 'twocol' ? stack.switchReading(i) : stack.extractFile(i, stack.getReaderRect())),
@@ -1321,9 +1806,27 @@ window.__dbg = {
     stack.orbit.pitch = clamp(pitch, 22, 65);
     stack.orbit.zoom = clamp(zoom, 0.7, 1.8);
     stack.poke();
+    if (stack.notifyView) stack.notifyView();
+  },
+  // 視角提示列狀態（e2e 用）：differs＝目前視角偏離我的視角；bar＝提示列真的看得見
+  viewState: () => {
+    const vb = document.getElementById('viewBar');
+    // 注意 #viewBar 是 position:fixed，offsetParent 恆為 null，只能用 getClientRects 判有沒有版面
+    const shown = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).opacity !== '0';
+    return {
+      differs: stack.viewDiffers(),
+      bar: shown(vb) && vb.classList.contains('show'),
+      hasFav: !!stack.favView(),
+      saveShown: shown(document.getElementById('btnViewSave')),
+      favShown: shown(document.getElementById('btnViewFav'))
+    };
   },
   saveFavView: () => stack.saveFavView(),
-  clearFavView: () => { try { localStorage.removeItem('floderMyView'); } catch (_) {} },
+  clearFavView: () => {
+    try { localStorage.removeItem('floderMyView'); } catch (_) {}
+    stack._favCache = undefined;
+    stack.notifyView();
+  },
   setTheme: n => setTheme(n),
   // 投影（project.js）的測試鉤子：直接餵一個事件、假裝分頁在背景、讀最近清單
   project: data => handleProject(data),
@@ -1344,6 +1847,14 @@ window.__dbg = {
     return m ? Math.round(parseFloat(m.style.top)) : null;
   },
   readerScrollTop: () => reader.body.scrollTop,
+  // 分頁模式（tabs.js）的測試鉤子：狀態、模擬單擊；卡面 ×／⧉ 的投縮放後螢幕座標（e2e 點卡角用）
+  tabs: () => tabsMode._dbg(),
+  tabBadges: which => stack.tabBadgePositions(which === 'ai' ? TAB_AI_ZONE : TAB_X_ZONE),
+  tabZone: (i, which) => stack.cardZoneCss(i, which === 'ai' ? TAB_AI_ZONE : TAB_X_ZONE),
+  tabsEnter: () => tabsMode.enter(),
+  // 測試鉤子：直接把分頁卡送進右欄預覽（等於完整版點卡）；回 false＝那張不是分頁卡
+  tabsPreview: i => { const f = stack.view[i]; if (f && f.tab) { openInReader(f); return true; } return false; },
+  tabsExit: () => tabsMode.exit(),
   ready: () => !!lockedFolder && stack.files.length >= 0
 };
 
@@ -1398,6 +1909,9 @@ const tipAgain = document.getElementById('tipAgain');
 function tipSeen() { try { return localStorage.getItem(TIP_KEY) === '1'; } catch (_) { return false; } }
 function hideTip() {
   if (!tipEl.classList.contains('on')) return false;
+  // 看不見的說明（例如側欄模式用 CSS 藏起來）不能吃掉 Esc：靜靜收掉、讓 Esc 繼續往下走
+  const shown = tipEl.getClientRects().length > 0 && getComputedStyle(tipEl).visibility !== 'hidden';
+  if (!shown) { tipEl.classList.remove('on'); return false; }
   tipEl.classList.remove('on');
   try { localStorage.setItem(TIP_KEY, '1'); } catch (_) {}
   tipAgain.checked = false;
@@ -1513,6 +2027,19 @@ reader.undoAction = undo.undoAction;
 document.getElementById('btnUndoTop').addEventListener('click', () => undo.undoLast());
 
 function openMenu(file, x, y) {
+  if (file.tab) {
+    // 分頁卡的右鍵選單：改名／垃圾桶／找對話這些檔案操作不適用
+    if (file.tab.note) return;   // 安裝說明卡不給選單
+    const tabItems = [
+      ['tabsActivate', () => tabsMode.activateTab(file.tab)],
+      ['mOpen', () => { const i = stack.view.indexOf(file); if (mode !== 'twocol') stack.switchReading(i); else stack.extractFile(i, stack.getReaderRect()); }],
+      null,
+      ['tabsCopyUrl', () => copyText(file.tab.url)],
+      ['tabsOpenNew', () => postOp('/api/tabs/action', { op: 'open', url: file.tab.url }).catch(e => toast(t('opFail', { msg: e.message })))]
+    ];
+    renderMenuItems(file, tabItems, x, y);
+    return;
+  }
   const items = [
     ['mOpen', () => { const i = stack.view.indexOf(file); if (mode !== 'twocol') stack.switchReading(i); else stack.extractFile(i, stack.getReaderRect()); }],
     null,
@@ -1530,6 +2057,10 @@ function openMenu(file, x, y) {
   const selN = stack.selected.size;
   if (selN > 1 && stack.selected.has(file.path)) items.push(null, ['mTrashSel', () => batchTrash(stack.selectedFiles()), 'danger', { n: selN }]);
   else if (stack.view.indexOf(file) >= 0) items.splice(1, 0, ['mSelect', () => stack.selectClick(stack.view.indexOf(file), false)]);
+  renderMenuItems(file, items, x, y);
+}
+
+function renderMenuItems(file, items, x, y) {
   menuEl.innerHTML = '';
   const head = document.createElement('div'); head.className = 'head'; head.textContent = file.name; menuEl.appendChild(head);
   for (const it of items) {
@@ -1626,7 +2157,8 @@ function syncSelectAllUi(all) {
 syncSelectAllUi(false);
 stack.onSelection = files => {
   const all = !!stack.allSelected();
-  selBar.classList.toggle('on', files.length > 0);
+  // 分頁卡不是本機檔案：選取列（複製路徑／丟垃圾桶）不適用，藏起來
+  selBar.classList.toggle('on', files.length > 0 && !tabsMode.active);
   selBar.querySelector('.n').textContent = t('selCount', { n: files.length });
   const v = stack.viewCss;
   selBar.style.left = Math.round(v.x + v.w / 2) + 'px';
@@ -1714,7 +2246,8 @@ async function projectOpen(path, line) {
   if (!f) { toast(t('projGone', { name })); return false; }
   stack.readingPath = f.path;
   stack.poke();
-  if (mode === 'twocol') setMode('threecol');
+  if (PANEL) reader.setOpen(true);   // 側邊欄：?open=／投影也走整欄閱讀覆層（以前開了個看不見的右欄）
+  else if (mode === 'twocol') setMode('threecol');
   reader.show();
   await reader.open(f);
   if (stale()) return false;
@@ -1793,11 +2326,15 @@ function liveConvosChanged() {
 
 initLive({
   stack,
+  panel: PANEL,                     // 側邊欄：SSE 掛 ?panel=1，投影／疊的廣播不發給它
   currentTarget: () => (convoState || pileState ? null : lockedFolder),
   isPseudo: () => !!(convoState || pileState),
   reload: reloadCurrentView,
   refreshTree: refreshTreeCounts,
-  refreshConvos: liveConvosChanged
+  refreshConvos: liveConvosChanged,
+  onTabs: () => { tabsMode.onServerPush(); refreshExtLive(); },
+  // 側欄「回到完整畫面」：POST /api/tabs/focus 廣播只發給非側欄客戶端——捲到那張卡（順便進分頁模式）
+  onTabFocus: id => tabsMode.focusTab(id)
 });
 
 initProject({ openPath: projectOpen, openPile, attachPileRow: (row, id) => tree.attachCrow(row, { id, pile: true }) });

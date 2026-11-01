@@ -1,9 +1,9 @@
 // WebGL file-stack scene: upright cards in depth, hover-part physics,
 // click-to-extract flights, virtualized texture pool, idle render stop.
 import * as THREE from 'three';
-import { P, P_RANGES, P_DEFAULTS, TOOLBAR_H, clamp, damp, easeInOutCubic, saveParams, kindOf, theme, themeGen } from './util.js';
+import { P, P_RANGES, P_DEFAULTS, TOOLBAR_H, toolbarH, clamp, damp, easeInOutCubic, saveParams, kindOf, shortHash, theme, themeGen } from './util.js';
 import { t } from './i18n.js';
-import { placeholderCanvas, requestThumb, pumpThumbs, thumbQueueSize } from './thumbs.js';
+import { placeholderCanvas, sharedPlaceholderCanvas, requestThumb, pumpThumbs, thumbQueueSize } from './thumbs.js';
 
 const CARD_W = 4.0, CARD_H = 2.5;       // 寬卡 1.6:1，與縮圖畫布 1280×800 同比例（卡面不會被拉歪）
 const POOL_N = 30;                      // pool slots (virtual window + margin)
@@ -29,13 +29,20 @@ const FIT_PAD = 0.95;                                 // 取景：整疊佔畫�
 const ORBIT_YAW = 30;                                 // 左右各最多 30°
 const ORBIT_PITCH = [22, 65];                         // 俯角範圍（度）
 const ORBIT_ZOOM = [0.7, 1.8];                        // 拉近拉遠倍率
+// 「視角偏離我的視角」的容差（度／倍率）
+const VIEW_ANGLE_EPS = 1.5, VIEW_ZOOM_EPS = 0.03;
 const VIS_BACK = 4;                                   // 焦點後面最多顯示幾張（最後一張淡出）
-const SCROLL_VMAX = 6;                                // 滾動最高速度（張/秒）：再快字就看不清
-const WHEEL_LEAD = 5;                                 // 快滾最多領先目前位置幾張（停手後最多再滑 ~1 秒）
+const SCROLL_VMAX = 6;                                // 近距離（差 ≤ SCROLL_NEAR 張）的最高速度（張/秒）：字一路看得清
+const SCROLL_NEAR = 2;                                // 差幾張以內維持慢速
+const SCROLL_VMAX_FAR = 60;                           // 差很多張時的最高速度：滾三圈 ≈ 30 張要在 1 秒左右追到
+const SCROLL_ACCEL = 3.5;                             // 每多差一張，速度上限多幾張/秒（越接近目標越慢＝自然煞車）
+const SCROLL_JUMP = 40;                               // 差超過這麼多張就先瞬移到目標前 3 張，不一路刷過去
+const WHEEL_LEAD = 200;                               // 滾輪最多領先目前位置幾張：夠大＝滾了幾格就走幾張，不丟格
 const WHEEL_SNAP_MS = 160;                            // 停手多久後吸到最近一張
 const TEX_LRU_LIMIT = 60;
 const OUT_MS = 250;                     // old stack sinks
 const IN_STAGGER = 24;                  // ms per display-depth step when rising
+const NEAR_PH = VIS_BACK + 1;           // |u| 在這範圍內才同步畫專屬 placeholder（更遠的反正看不見）
 
 // u 位置的姿態：Catmull-Rom 平滑內插（過每個關鍵點、一階連續 → 卡片走弧線、速度不跳）
 function keyAt(arr, u) {
@@ -91,11 +98,17 @@ export class StackScene {
 
     // auto-framing camera state: fitTarget = where the fit wants us, fitCur = damped actual
     this.orbit = { yaw: 0, pitch: POSE_PITCH, zoom: 1 };   // 使用者轉的視角（右鍵拖、Ctrl+滾輪、雙擊回正）
+    // 開頁／F5／重開 App：存過「我的視角」就直接用它，沒存過才用預設視角
+    this.applyFavView();
+    this.onViewChange = null;         // main.js 接線：視角跟「我的視角」不同時提示存／回
     this.fitTarget = { target: new THREE.Vector3(), dist: 12, pitch: POSE_PITCH, yaw: 0 };
     this.fitCur = { target: new THREE.Vector3(), dist: 12, pitch: POSE_PITCH, yaw: 0 };
+    this.compactFit = false;          // 側邊欄窄欄：焦點卡幾乎填滿欄寬（main.js 依 ?mode=panel 開）
     this.frameTargets();
     this.fitCur.target.copy(this.fitTarget.target);
     this.fitCur.dist = this.fitTarget.dist;
+    this.fitCur.pitch = this.fitTarget.pitch;     // 第一幀就站在（可能存過的）視角上，不用等阻尼
+    this.fitCur.yaw = this.fitTarget.yaw;
     this.applyCameraPose();
 
     // ---- pool ----------------------------------------------------------------
@@ -112,7 +125,7 @@ export class StackScene {
         mesh, geo, base: geo.attributes.position.array.slice(), geoBend: 0,
         file: null, fileIdx: -1, mode: 'home',
         d: i, yOff: 0, scale: 1, opacity: 0, bend: 0,
-        stage: null, thumbReqPath: null, texName: null
+        stage: null, thumbReqPath: null, texName: null, phShared: false
       });
     }
 
@@ -122,6 +135,7 @@ export class StackScene {
     this.nameFilter = '';
     this.folderLabel = '';
     this.scrollTarget = 0; this.scrollCur = 0; this.scrollVel = 0;
+    this.lastUserScrollAt = 0;        // 最近一次「真人滾輪／拖曳捲動」的時間戳（分頁模式定位用它分辨使用者已接手）
     this.hoverD = null;               // display depth under cursor (float) or null
     this._hoverCand = null;           // 延遲 hover 的候選深度（dwell 中）
     this._hoverCandT = 0;             // 候選開始時間（performance.now）
@@ -135,6 +149,7 @@ export class StackScene {
     this.lastFolderSwitchMs = 0;
     this.fpsRing = [];
     this.onCardClick = null;          // set by main.js
+    this.onClickIntercept = null;     // set by main.js；回 true＝吞掉這次點擊（分頁模式：點卡＝切分頁，不開閱讀區）
     this.onStageArrived = null;
     this.rafId = null;
     this.wakeUntil = 0;
@@ -213,7 +228,32 @@ export class StackScene {
     const focusDepth = new THREE.Vector3(0, 1.6, -0.45).sub(cam).dot(f);
     const dist0 = Math.max(1, focusDepth);
     this.fitTarget.target.copy(cam).addScaledVector(f, dist0);
-    this.fitTarget.dist = dist0 / o.zoom;
+    let dist = dist0 / o.zoom;
+    if (this.compactFit) {
+      // 窄欄（側邊欄）：整條弧塞進去會讓卡變一小塊。直接量焦點卡「在畫面上最寬
+      // 的部位」的投影寬（底邊＋向前捲的頂角，含相機姿態與卡面傾斜），兩三步收斂
+      // 到佔欄寬 94%（400px 欄≈左右各留 12px）；後排卡露出上緣即可。
+      const tanH = Math.tan(this.camera.fov * Math.PI / 360) * asp;
+      const ps0 = poseAt(0), cA = Math.cos(ps0.rot), sA = Math.sin(ps0.rot), hw = CARD_W / 2;
+      const local = [[0, 0]];                                     // 底邊
+      if (ps0.bend > 1e-4) {
+        const hy = FOCUS_HINGE * CARD_H, R = (CARD_H - hy) / ps0.bend;
+        local.push([hy + R * Math.sin(ps0.bend), -R * (1 - Math.cos(ps0.bend))]);   // 捲起的頂
+      } else local.push([CARD_H, 0]);
+      const corners = [];
+      for (const [ly, lz] of local) for (const x of [-hw, hw])
+        corners.push(new THREE.Vector3(x, ps0.y + ly * cA - lz * sA, ps0.z + ly * sA + lz * cA));
+      for (let i = 0; i < 3; i++) {
+        const camPos = this.fitTarget.target.clone().addScaledVector(f, -dist);
+        const ndc = pt => pt.clone().sub(camPos).dot(r) / (tanH * pt.clone().sub(camPos).dot(f));
+        let half = 0;
+        for (let k = 0; k < corners.length; k += 2)
+          half = Math.max(half, Math.abs(ndc(corners[k + 1]) - ndc(corners[k])) / 2);
+        if (Math.abs(half - 0.94) < 0.005) break;
+        dist = Math.max(1, dist * (half / 0.94));
+      }
+    }
+    this.fitTarget.dist = dist;
     this.fitTarget.pitch = o.pitch;
     this.fitTarget.yaw = o.yaw;
     this.visShown = VIS_BACK;
@@ -221,6 +261,17 @@ export class StackScene {
   }
   applyCamera() { this.frameTargets(); }
   setFitOverride(o) { this._fitOverride = o; this.poke(); }
+  // 窄欄專用大卡取景：切換後立即重算並到位（不走 damp，避免欄寬拖影）
+  setCompactFit(on) {
+    this.compactFit = !!on;
+    this.frameTargets();
+    this.fitCur.target.copy(this.fitTarget.target);
+    this.fitCur.dist = this.fitTarget.dist;
+    this.fitCur.pitch = this.fitTarget.pitch;
+    this.fitCur.yaw = this.fitTarget.yaw;
+    this.applyCameraPose();
+    this.poke();
+  }
   applyCameraPose() {
     const th = this.fitCur.pitch * Math.PI / 180, yw = (this.fitCur.yaw || 0) * Math.PI / 180;
     this._camDir = this._camDir || new THREE.Vector3();
@@ -231,7 +282,7 @@ export class StackScene {
   }
 
   resize() {
-    const w = innerWidth, h = innerHeight - TOOLBAR_H;
+    const w = innerWidth, h = innerHeight - toolbarH();
     this.renderer.setSize(w, h);
     this.viewCss.w = this.viewCss.tw = w - this.viewCss.x;
     this.poke();
@@ -247,7 +298,7 @@ export class StackScene {
     const v = this.viewCss;
     v.x = v.tx = x; v.w = v.tw = Math.max(0, w);
     // three.js setViewport/setScissor 吃 CSS px，內部自己乘 pixelRatio；這裡再乘 dpr 會在縮放≠100% 時錯位
-    const hCss = this.canvas.clientHeight || (innerHeight - TOOLBAR_H);
+    const hCss = this.canvas.clientHeight || (innerHeight - toolbarH());
     const wCss = Math.max(1, w);
     this.renderer.setViewport(x, 0, wCss, hCss);
     this.renderer.setScissor(x, 0, wCss, hCss);
@@ -279,7 +330,7 @@ export class StackScene {
     v.w = damp(v.w, v.tw, 11, dt);
     if (Math.abs(v.x - v.tx) < 0.5) v.x = v.tx;
     if (Math.abs(v.w - v.tw) < 0.5) v.w = v.tw;
-    const hCss = this.canvas.clientHeight || (innerHeight - TOOLBAR_H);
+    const hCss = this.canvas.clientHeight || (innerHeight - toolbarH());
     const wCss = Math.max(1, v.w);
     this.renderer.setViewport(v.x, 0, wCss, hCss);
     this.renderer.setScissor(v.x, 0, wCss, hCss);
@@ -312,6 +363,21 @@ export class StackScene {
     }
     return e.tex;
   }
+  // 遠卡共用的灰骨架（無檔名列）：綁卡時只替「焦點附近」的卡畫專屬 placeholder，
+  // 更遠的卡（反正淡出到看不見）用同一張——大資料夾／21+ 分頁進場時，原本一次
+  // 同步畫 30 張 placeholder（每張都是 canvas＋逐字 measureText 省略）會併成一個
+  // 50–100ms+ 的長任務，開啟後第一下滑動就被它卡住。
+  // 分頁模式的遠卡有自己的共用骨架（右上角畫 ×），跟檔案模式的灰骨架分開快取
+  sharedPhTex(file) {
+    const isTab = !!(file && file.tab && !file.tab.note);
+    const KEY = isTab ? '|shared-ph-tab|' : '|shared-ph|';
+    let e = this.phCache.get(KEY);
+    if (!e) {
+      e = { tex: this.makeTex(sharedPlaceholderCanvas(isTab)), key: KEY };
+      this.phCache.set(KEY, e);
+    }
+    return e.tex;
+  }
   texGet(path) {
     const e = this.texCache.get(path);
     if (e) { e.t = ++this.lruClock; return e.tex; }
@@ -330,6 +396,7 @@ export class StackScene {
           s.mesh.material.map = this.placeholderTex(s.file);
           s.mesh.material.needsUpdate = true;
           s.texName = s.file.name;      // 換回本檔 placeholder，貼圖身分跟著檔走
+          s.phShared = false;
           s.thumbReqPath = null; // allow re-request when visible again
         }
       }
@@ -439,9 +506,13 @@ export class StackScene {
     else if (m === 'name') a.sort((x, y) => coll.compare(x.name, y.name));
     return a;
   }
+  // 檔名篩選的「過濾」半（排序交給 sorted）：keepOrder 路徑也重用這裡，免得兩份實作漂移
+  nameFilterMatch(files) {
+    const q = (this.nameFilter || '').trim().toLowerCase();
+    return q ? files.filter(f => String(f.name || '').toLowerCase().includes(q)) : files.slice();
+  }
   applyNameFilter(files) {
-    const q = this.nameFilter.trim().toLowerCase();
-    return this.sorted(q ? files.filter(f => f.name.toLowerCase().includes(q)) : files);
+    return this.sorted(this.nameFilterMatch(files));
   }
   setNameFilter(q) {
     this.nameFilter = q;
@@ -453,6 +524,78 @@ export class StackScene {
   }
 
   windowBase() { return Math.floor(this.scrollCur) - 3; }
+
+  // 使用者正在捲／阻尼還沒停：這段時間內不換清單，免得位置被拉走
+  scrollBusy() {
+    return this.dragging === true
+      || performance.now() < (this.wheelUntil || 0)
+      || Math.abs(this.scrollTarget - this.scrollCur) > 0.02
+      || Math.abs(this.scrollVel) > 0.05;
+  }
+
+  // 清單就地更新（分頁模式專用）：不重置相機、不重播進場動畫、不把位置歸零。
+  // anchorPath＝更新前在最前面的那張卡，用它換算更新後的位置；它被關掉了就停在
+  // 原本的索引（夾在範圍內）。內容真的變了的卡只丟它的貼圖 → 讓卡堆只重畫那幾張。
+  // opts.keepOrder：呼叫端已經把順序排好（分頁模式的「一局內凍結順序」），
+  // 這裡只套用檔名篩選、不再照排序模式重排——不然點分頁 → lastAccessed 更新 →
+  // 那張卡跳到最前，整疊瞬間亂跳。回傳被改到的 path 陣列。
+  updateFilesInPlace(files, anchorPath, opts) {
+    const keepOrder = !!(opts && opts.keepOrder);
+    const oldView = this.view;
+    const oldFocus = clamp(Math.round(this.scrollCur), 0, Math.max(0, oldView.length - 1));
+    // 卡面「畫得出來的」東西才算：標題／網址／favicon／截圖版本／頁面文字，
+    // 加上檔名列上的日期與「目前分頁」標記（這兩個也只有重畫才會變）。
+    // 長字串（favicon data URL、頁面文字）先收成雜湊再比。
+    const sig = f => f ? [f.name, f.tab && f.tab.title, shortHash(f.tab && f.tab.url),
+      shortHash(f.tab && f.tab.fav), f.tab && (f.tab.hasShot ? 1 : 0), f.tab && f.tab.shotVer,
+      shortHash(f.tab && f.tab.text), f.mtime, f.tab && (f.tab.active ? 1 : 0),
+      f.localPath || '', f.builtin ? 1 : 0].join('\u0000') : '';
+    const oldByPath = new Map(oldView.map(f => [f.path, sig(f)]));
+    const changed = [];
+    for (const f of files) {
+      const before = oldByPath.get(f.path);
+      if (before !== undefined && before !== sig(f)) changed.push(f.path);
+    }
+
+    const filtered = keepOrder
+      ? this.nameFilterMatch(files)
+      : this.applyNameFilter(files);
+    this.files = files.slice();
+    this.view = filtered;
+    this.total = files.length;
+    this.hasMore = false;
+    this.moreLoader = null;
+    this.loadingMore = false;
+
+    const at = anchorPath ? filtered.findIndex(f => f.path === anchorPath) : -1;
+    const idx = at >= 0 ? at : clamp(oldFocus, 0, Math.max(0, filtered.length - 1));
+    this.scrollCur = idx;
+    this.scrollTarget = idx;
+    this.scrollVel = 0;
+    this.hoverD = null;
+
+    // 內容變了的卡：丟掉舊貼圖，卡片會顯示新 placeholder 再排一次真縮圖
+    for (const p of changed) {
+      const e = this.texCache.get(p);
+      if (e) { e.tex.dispose(); this.texCache.delete(p); }
+    }
+    // 已經不存在的分頁（關掉了）：它的貼圖也不會再用到，順手丟掉，別留在快取裡
+    if (this.texCache.size > this.view.length) {
+      const alive = new Set(this.view.map(f => f.path));
+      for (const p of [...this.texCache.keys()]) {
+        if (alive.has(p)) continue;
+        this.texCache.get(p).tex.dispose();
+        this.texCache.delete(p);
+      }
+    }
+    const changedSet = new Set(changed);
+    for (const s of this.slots) if (s.file && changedSet.has(s.file.path)) s.thumbReqPath = null;
+
+    this.rebindAll(true);
+    this.poke();
+    this.notifySelection();
+    return changed;
+  }
 
   rebindAll(snap) {
     const base = this.windowBase();
@@ -478,7 +621,14 @@ export class StackScene {
     if (s.file) {
       // 規則：slot 換綁新檔時，新貼圖還沒好之前一律顯示「該檔」的 placeholder 卡面
       // （快取命中才是該檔的真貼圖），絕不可沿用別檔的貼圖。
-      const tex = this.texGet(s.file.path) || this.placeholderTex(s.file);
+      // 例外：離焦點太遠的卡（|u| > NEAR_PH，視覺上已淡出到看不見）先用共用灰骨架，
+      // 別在綁卡爆發時同步畫幾十張專屬 placeholder。綁定之後卡還會滾近——
+      // bindSlot 對同檔同槽早退，不會再進來，所以近窗升級在 tick 的 phShared 檢查做；
+      // 真縮圖到貨（applyThumb）直接蓋掉，哪條先發生都對。
+      const near = Math.abs(uNew) <= NEAR_PH;
+      const real = this.texGet(s.file.path);
+      const tex = real || (near ? this.placeholderTex(s.file) : this.sharedPhTex(s.file));
+      s.phShared = !real && !near;
       s.mesh.material.map = tex;
       s.mesh.material.needsUpdate = true;
       s.texName = s.file.name;
@@ -500,10 +650,10 @@ export class StackScene {
     // camera.aspect 是「現在的」欄寬（twocol＝全寬），ndcX 只被 clamp 到舊 frustum
     // 邊緣，動畫結束後卡就飛到畫面外（使用者看到的就是飛出去的卡被切掉）。
     // 這裡改用「目標 viewport 的 aspect」手算方向，不依賴當下相機的 projection。
-    const w = Math.max(1, this.viewCss.tw), hCss = Math.max(1, this.canvas.clientHeight || innerHeight - TOOLBAR_H);
+    const w = Math.max(1, this.viewCss.tw), hCss = Math.max(1, this.canvas.clientHeight || innerHeight - toolbarH());
     const asp = w / hCss;
     const ndcX = clamp(((rectCss.x + rectCss.w / 2) - this.viewCss.tx) / w * 2 - 1, -1, 1);
-    const ndcY = clamp(1 - ((rectCss.y - TOOLBAR_H + rectCss.h / 2) / hCss) * 2, -1, 1);
+    const ndcY = clamp(1 - ((rectCss.y - toolbarH() + rectCss.h / 2) / hCss) * 2, -1, 1);
     const tanV = Math.tan(this.camera.fov * Math.PI / 360);
     const dir = new THREE.Vector3(ndcX * tanV * asp, ndcY * tanV, -1).normalize()
       .applyQuaternion(this.camQuat);
@@ -570,7 +720,7 @@ export class StackScene {
   setNdc(e) {
     this.pointerNdc.set(
       ((e.clientX - this.viewCss.x) / Math.max(1, this.viewCss.w)) * 2 - 1,
-      -((e.clientY - TOOLBAR_H) / Math.max(1, this.canvas.clientHeight)) * 2 + 1);
+      -((e.clientY - toolbarH()) / Math.max(1, this.canvas.clientHeight)) * 2 + 1);
   }
   bindPointer() {
     const cv = this.canvas;
@@ -584,12 +734,13 @@ export class StackScene {
         if (down.moved) {
           // 拖曳捲動：往上拖＝往後翻（跟滾輪同向）
           this.dragging = true;
+          this.lastUserScrollAt = performance.now();
           this.scrollTarget = clamp(down.startScroll + (down.y - e.clientY) / 120, 0, this.scrollMax());
           this.poke();
         }
         return;
       }
-      const hit = this.pickSlot();
+      const hit = this.pickSlotHit();
       cv.style.cursor = hit ? 'pointer' : '';
     });
     cv.addEventListener('pointerleave', () => { if (!down) cv.style.cursor = ''; });
@@ -607,6 +758,7 @@ export class StackScene {
       this.orbit.yaw = clamp(orb.yaw - (e.clientX - orb.x) * 0.2, -ORBIT_YAW, ORBIT_YAW);
       this.orbit.pitch = clamp(orb.pitch + (e.clientY - orb.y) * 0.2, ORBIT_PITCH[0], ORBIT_PITCH[1]);
       this.poke();
+      this.notifyView();
     });
     const endOrb = e => {
       if (!orb || e.pointerId !== orb.id) return;
@@ -625,9 +777,10 @@ export class StackScene {
       if (e.button !== 0 || down) return;
       this.poke();
       this.setNdc(e);
-      const hit = this.pickSlot();
+      const hit = this.pickSlotHit();
       down = { x: e.clientX, y: e.clientY, t: performance.now(),
                fileIdx: hit ? hit.fileIdx : -1,
+               uv: hit ? hit.uv : null,                    // 卡面 uv：分頁卡右上角 ×／⧉ 的命中判定用
                startScroll: this.scrollTarget, id: e.pointerId, moved: false };
       try { cv.setPointerCapture(e.pointerId); } catch (_) {}
     });
@@ -641,6 +794,10 @@ export class StackScene {
         // Ctrl（Mac ⌘）＋點＝加選／取消；Shift＋點＝從上次點的那張選到這張（跟檔案總管一樣）
         this.selectClick(down.fileIdx, e.shiftKey);
       } else if (isClick && down.fileIdx >= 0 && this.getReaderRect) {
+        // 分頁模式（tabs.js）攔截：卡面右上 ×＝關網頁、側欄 ⧉＝複製給 AI、其餘點卡＝切分頁或
+        // 開右欄預覽（onClickIntercept 回 true＝吞掉，不做抽出動畫）。uv 是點在卡面上的位置。
+        const f = this.view[down.fileIdx];
+        if (f && this.onClickIntercept && this.onClickIntercept(f, down.uv)) { down = null; this.dragging = false; return; }
         // 閱讀區已經開著：只換內容，不再做「抽出飛到右邊」的動畫（三欄時那一下會讓畫面抖）；
         // 正在讀的那張改用外框＋微微抬高標示
         if (this.readerOpen && this.readerOpen()) this.switchReading(down.fileIdx);
@@ -657,14 +814,14 @@ export class StackScene {
       const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
       const dy = e.deltaY * unit;
       if (e.ctrlKey) {   // Ctrl+滾輪＝拉近拉遠（觸控板捏合也是這個事件）
-        this.orbit.zoom = clamp(this.orbit.zoom * Math.exp(-dy * 0.0015), ORBIT_ZOOM[0], ORBIT_ZOOM[1]);
-        this.poke();
+        this.zoomBy(dy);
         return;
       }
       // 一次「滾動手勢」（事件間隔 < WHEEL_SNAP_MS）累加原始位移，換算成整數張：
       // 一格 ≈ 100×螢幕縮放（115% 縮放時 115）。舊做法每個 ≥50 的事件各算一張——
       // 瀏覽器把一格拆成兩個 57 送來時就變成兩張（滾一格、停下後又往下掉一格）。
       const now = performance.now();
+      this.lastUserScrollAt = now;   // 就算是被 LEAD 夾住／清單還沒來的滾輪，也算「使用者想滾」
       if (!this._wheelBurst || now > (this.wheelUntil || 0)) {
         this._wheelBurst = { start: Math.round(this.scrollTarget), sum: 0 };
       }
@@ -681,27 +838,67 @@ export class StackScene {
       this.poke();
     }, { passive: false });
   }
+  // Ctrl+滾輪消費一個 delta 量＝相機拉近拉遠（目前只有本檔的滾輪處理呼叫）
+  zoomBy(dy) {
+    this.orbit.zoom = clamp(this.orbit.zoom * Math.exp(-dy * 0.0015), ORBIT_ZOOM[0], ORBIT_ZOOM[1]);
+    this.poke();
+    this.notifyView();
+  }
   resetView() {
     this.orbit.yaw = 0; this.orbit.pitch = POSE_PITCH; this.orbit.zoom = 1;
     this.poke();
+    this.notifyView();
   }
-  // 「我的視角」：使用者自己調好的左右/俯角/遠近，存在這台電腦的瀏覽器裡
+  // 目前的「目標視角」：存過我的視角就是它（正規化到合法範圍），沒存過就是預設視角
+  targetView() {
+    const v = this.favView();
+    return v ? { yaw: clamp(v.yaw, -ORBIT_YAW, ORBIT_YAW),
+      pitch: clamp(v.pitch, ORBIT_PITCH[0], ORBIT_PITCH[1]),
+      zoom: clamp(v.zoom, ORBIT_ZOOM[0], ORBIT_ZOOM[1]) }
+      : { yaw: 0, pitch: POSE_PITCH, zoom: 1 };
+  }
+  // 目前視角是否偏離目標視角（只看相機、有容差；不看捲到第幾張卡）
+  viewDiffers() {
+    const a = this.orbit, b = this.targetView();
+    return Math.abs(a.yaw - b.yaw) > VIEW_ANGLE_EPS || Math.abs(a.pitch - b.pitch) > VIEW_ANGLE_EPS
+      || Math.abs(a.zoom - b.zoom) > VIEW_ZOOM_EPS;
+  }
+  notifyView() {
+    if (this.onViewChange) this.onViewChange(this.viewDiffers());
+  }
+  // 「我的視角」：使用者自己調好的左右/俯角/遠近，存在這台電腦的瀏覽器裡。
+  // 解析結果快取起來——拖曳時每個 pointermove 都會問一次，不能每次 parse localStorage。
   favView() {
-    try { const v = JSON.parse(localStorage.getItem('floderMyView') || 'null'); if (v && Number.isFinite(v.yaw)) return v; } catch (_) {}
-    return null;
-  }
-  saveFavView() {
-    const v = { yaw: this.orbit.yaw, pitch: this.orbit.pitch, zoom: this.orbit.zoom };
-    try { localStorage.setItem('floderMyView', JSON.stringify(v)); } catch (_) {}
+    if (this._favCache !== undefined) return this._favCache;
+    let v = null;
+    try {
+      const raw = JSON.parse(localStorage.getItem('floderMyView') || 'null');
+      // 三個值都得是有限數字：壞資料（手改、舊版格式）就當沒存過
+      if (raw && Number.isFinite(raw.yaw) && Number.isFinite(raw.pitch) && Number.isFinite(raw.zoom)) v = raw;
+    } catch (_) {}
+    this._favCache = v;
     return v;
   }
-  goFavView() {
+  // 把存的視角套到 orbit 上（開頁時用）；沒存過不動 orbit
+  applyFavView() {
     const v = this.favView();
     if (!v) return false;
-    this.orbit.yaw = clamp(v.yaw, -ORBIT_YAW, ORBIT_YAW);
-    this.orbit.pitch = clamp(v.pitch, ORBIT_PITCH[0], ORBIT_PITCH[1]);
-    this.orbit.zoom = clamp(v.zoom, ORBIT_ZOOM[0], ORBIT_ZOOM[1]);
+    const t = this.targetView();
+    this.orbit.yaw = t.yaw; this.orbit.pitch = t.pitch; this.orbit.zoom = t.zoom;
+    return true;
+  }
+  // 回傳實際存下來的視角；storage 停用／爆掉時回 null（UI 據此提示）
+  saveFavView() {
+    const v = { yaw: this.orbit.yaw, pitch: this.orbit.pitch, zoom: this.orbit.zoom };
+    let ok = true;
+    try { localStorage.setItem('floderMyView', JSON.stringify(v)); } catch (_) { ok = false; }
+    if (ok) { this._favCache = v; this.notifyView(); }   // 剛存的就是目前視角：提示按鈕淡出
+    return ok ? v : null;
+  }
+  goFavView() {
+    if (!this.applyFavView()) return false;
     this.poke();
+    this.notifyView();
     return true;
   }
   // 測試相容：舊 hover 撥開已拿掉，「被抽起來的那張」＝正中央焦點那張
@@ -711,12 +908,98 @@ export class StackScene {
   }
 
   pickSlot(ndc) {
+    const h = this.pickSlotHit(ndc);
+    return h ? h.slot : null;
+  }
+  // 連同命中點的卡面 uv 一起回（分頁卡右上角 ×／⧉ 的命中判定用；uv 跟 CPU 彎曲後的幾何走）
+  pickSlotHit(ndc) {
     const cand = this.slots.filter(s => s.file && s.mode === 'home' && s.opacity > 0.3)
       .map(s => s.mesh);
     this.raycaster.setFromCamera(ndc || this.pointerNdc, this.camera);
     const hits = this.raycaster.intersectObjects(cand, false);
     if (!hits.length) return null;
-    return this.slots.find(s => s.mesh === hits[0].object) || null;
+    const slot = this.slots.find(s => s.mesh === hits[0].object) || null;
+    return slot ? { slot, fileIdx: slot.fileIdx, uv: hits[0].uv || null } : null;
+  }
+  // 卡面上某 uv 點的本機座標：幾何頂點位置已含 CPU 彎曲，拿包夾的四個格點雙線性插值
+  _uvLocalPos(s, tu, tv) {
+    const pos = s.mesh.geometry.attributes.position;
+    const uvA = s.mesh.geometry.attributes.uv;
+    if (!pos || !uvA || !pos.count) return null;
+    let lu = null, ru = null, lv = null, rv = null;
+    for (let i = 0; i < pos.count; i++) {
+      const u = uvA.getX(i), v = uvA.getY(i);
+      if (u <= tu + 1e-9 && (lu === null || u > lu)) lu = u;
+      if (u >= tu - 1e-9 && (ru === null || u < ru)) ru = u;
+      if (v <= tv + 1e-9 && (lv === null || v > lv)) lv = v;
+      if (v >= tv - 1e-9 && (rv === null || v < rv)) rv = v;
+    }
+    if (lu === null || ru === null || lv === null || rv === null) return null;
+    const at = (u, v) => {
+      let best = null, bd = Infinity;
+      for (let i = 0; i < pos.count; i++) {
+        const d = Math.abs(uvA.getX(i) - u) + Math.abs(uvA.getY(i) - v);
+        if (d < bd) { bd = d; best = i; }
+      }
+      return best;
+    };
+    const corners = [at(lu, lv), at(ru, lv), at(lu, rv), at(ru, rv)];
+    const fu = ru === lu ? 0 : (tu - lu) / (ru - lu);
+    const fv = rv === lv ? 0 : (tv - lv) / (rv - lv);
+    const lerp = (get) => (1 - fu) * ((1 - fv) * get(corners[0]) + fv * get(corners[2]))
+                        + fu * ((1 - fv) * get(corners[1]) + fv * get(corners[3]));
+    return [lerp(i => pos.getX(i)), lerp(i => pos.getY(i)), lerp(i => pos.getZ(i))];
+  }
+  // 卡面上某塊 uv 區域（{u0,u1?,v0}，v=1＝卡頂）的「一個真的點得到」的螢幕座標（整頁 css px）。
+  // 流程：插值出區域中心投影 → raycast 驗證「打在這張卡自己、且命中 uv 還在區域內」；
+  // 被前排卡遮住就改試區域內的實際頂點（離中心近的先）。全失敗回 null＝這張卡的徽章點不到。
+  cardZoneCss(fileIdx, zone) {
+    const s = this.slots.find(x => x.fileIdx === fileIdx && x.file && x.mode !== 'away' && x.mesh && x.mesh.visible);
+    if (!s || !zone || !this.viewCss || !(this.viewCss.w > 0)) return null;
+    const pos = s.mesh.geometry.attributes.position;
+    const uvA = s.mesh.geometry.attributes.uv;
+    if (!pos || !uvA || !pos.count) return null;
+    const u0 = zone.u0, u1 = zone.u1 == null ? 1 : zone.u1, v0 = zone.v0;
+    if (!(u0 < u1) || !(v0 < 1)) return null;
+    s.mesh.updateWorldMatrix(true, false);
+    this.camera.updateMatrixWorld();
+    const tu = zone.uc != null ? zone.uc : (u0 + u1) / 2;
+    const tv = zone.vc != null ? zone.vc : (1 + v0) / 2;
+    const cands = [];
+    const c0 = this._uvLocalPos(s, tu, tv);
+    if (c0) cands.push({ p: c0, d: -1 });   // 區域中心插值（距離 -1：永遠最先試）
+    for (let i = 0; i < pos.count; i++) {
+      const u = uvA.getX(i), vv = uvA.getY(i);
+      if (u >= u0 && u <= u1 && vv >= v0)
+        cands.push({ p: [pos.getX(i), pos.getY(i), pos.getZ(i)], d: Math.abs(u - tu) + Math.abs(vv - tv) });
+    }
+    cands.sort((a, b) => a.d - b.d);        // 離熱區中心近的先試，全失敗才回 null
+    const v = this._zoneV || (this._zoneV = new THREE.Vector3());
+    const ndc = this._zoneNdc || (this._zoneNdc = new THREE.Vector2());
+    for (const c of cands.length > 25 ? cands.slice(0, 25) : cands) {
+      const p = c.p;
+      v.set(p[0], p[1], p[2]).applyMatrix4(s.mesh.matrixWorld).project(this.camera);
+      const x = this.viewCss.x + (v.x * 0.5 + 0.5) * this.viewCss.w;
+      const y = toolbarH() + (-v.y * 0.5 + 0.5) * this.canvas.clientHeight;
+      ndc.set(((x - this.viewCss.x) / Math.max(1, this.viewCss.w)) * 2 - 1,
+              -((y - toolbarH()) / Math.max(1, this.canvas.clientHeight)) * 2 + 1);
+      const hit = this.pickSlotHit(ndc);
+      if (hit && hit.slot === s && hit.uv &&
+          hit.uv.x >= u0 - 1e-6 && hit.uv.x <= u1 + 1e-6 && hit.uv.y >= v0 - 1e-6) {
+        return { x, y, name: s.file.name, mode: s.mode, fileIdx: s.fileIdx };
+      }
+    }
+    return null;
+  }
+  // 每張看得見的分頁卡右上角 ×（或 ⧉）的螢幕座標——e2e 驗「不 hover 每張卡也都畫著」用
+  tabBadgePositions(zone) {
+    const out = [];
+    for (const s of this.visibleHomeSlots()) {
+      if (!s.file || !s.file.tab || s.file.tab.note) continue;
+      const p = this.cardZoneCss(s.fileIdx, zone);
+      if (p) out.push(p);
+    }
+    return out.sort((a, b) => a.fileIdx - b.fileIdx);
   }
 
   // screen-px position of the card for a file index (tests)
@@ -727,7 +1010,7 @@ export class StackScene {
     const w = this.viewCss.w, h = this.canvas.clientHeight;
     return {
       x: this.viewCss.x + (v.x * 0.5 + 0.5) * w,
-      y: TOOLBAR_H + (-v.y * 0.5 + 0.5) * h,
+      y: toolbarH() + (-v.y * 0.5 + 0.5) * h,
       name: s.file.name, mode: s.mode, d: s.d
     };
   }
@@ -742,7 +1025,7 @@ export class StackScene {
     const v = this._tmpNdc || (this._tmpNdc = new THREE.Vector2());
     v.set(
       ((px - this.viewCss.x) / Math.max(1, this.viewCss.w)) * 2 - 1,
-      -((py - TOOLBAR_H) / Math.max(1, this.canvas.clientHeight)) * 2 + 1);
+      -((py - toolbarH()) / Math.max(1, this.canvas.clientHeight)) * 2 + 1);
     const hit = this.pickSlot(v);
     return hit ? { fileIdx: hit.fileIdx, name: hit.file.name } : null;
   }
@@ -756,7 +1039,7 @@ export class StackScene {
       for (const [lx, ly] of pts) {
         v.set(lx, ly, 0).applyMatrix4(s.mesh.matrixWorld).project(this.camera);
         const px = this.viewCss.x + (v.x * 0.5 + 0.5) * this.viewCss.w;
-        const py = TOOLBAR_H + (-v.y * 0.5 + 0.5) * this.canvas.clientHeight;
+        const py = toolbarH() + (-v.y * 0.5 + 0.5) * this.canvas.clientHeight;
         if (px < minX) minX = px; if (px > maxX) maxX = px;
         if (py < minY) minY = py; if (py > maxY) maxY = py;
       }
@@ -773,7 +1056,8 @@ export class StackScene {
     out.sort((a, b) => a.fileIdx - b.fileIdx);
     return out;
   }
-  // pixel bounding box for one card (for「卡片夠大」斷言)
+  // 卡面矩形（css px）。用途：e2e「卡片夠大」斷言；分頁模式的浮動「預覽」鈕座標（tabs.js）
+  // aside: Project 座標是整頁絕對 css px（canvas 左偏已含 viewCss.x），可直接給 position:fixed
   cardBoundsCss(fileIdx) {
     const s = this.slots.find(x => x.fileIdx === fileIdx && x.file && x.mesh.visible);
     if (!s) return null;
@@ -784,7 +1068,7 @@ export class StackScene {
     for (const [lx, ly] of pts) {
       v.set(lx, ly, 0).applyMatrix4(s.mesh.matrixWorld).project(this.camera);
       const px = this.viewCss.x + (v.x * 0.5 + 0.5) * this.viewCss.w;
-      const py = TOOLBAR_H + (-v.y * 0.5 + 0.5) * this.canvas.clientHeight;
+      const py = toolbarH() + (-v.y * 0.5 + 0.5) * this.canvas.clientHeight;
       if (px < minX) minX = px; if (px > maxX) maxX = px;
       if (py < minY) minY = py; if (py > maxY) maxY = py;
     }
@@ -842,8 +1126,8 @@ export class StackScene {
         v3.set(lx, ly, 0).applyMatrix4(s.mesh.matrixWorld).project(this.camera);
         if (!Number.isFinite(v3.x) || v3.z < -1 || v3.z > 1) continue;
         const px = this.viewCss.x + (v3.x * 0.5 + 0.5) * w;
-        const py = TOOLBAR_H + (-v3.y * 0.5 + 0.5) * h;
-        if (px < this.viewCss.x || px >= this.viewCss.x + w || py < TOOLBAR_H || py >= TOOLBAR_H + h) continue;
+        const py = toolbarH() + (-v3.y * 0.5 + 0.5) * h;
+        if (px < this.viewCss.x || px >= this.viewCss.x + w || py < toolbarH() || py >= toolbarH() + h) continue;
         tot++;
         const hit = this.pickAtCss(px, py);
         if (hit && hit.fileIdx === fileIdx) visCnt++;
@@ -912,8 +1196,16 @@ export class StackScene {
       if (r !== this.scrollTarget) this.scrollTarget = r;
     }
     {
-      const err = this.scrollTarget - this.scrollCur;
-      const want = clamp(err * 9, -SCROLL_VMAX, SCROLL_VMAX);
+      let err = this.scrollTarget - this.scrollCur;
+      if (Math.abs(err) > SCROLL_JUMP) {   // 差太多：瞬移到目標前 3 張，最後幾張照常飛進來
+        this.scrollCur = this.scrollTarget - Math.sign(err) * 3;
+        this.scrollVel = Math.sign(err) * SCROLL_VMAX;
+        err = this.scrollTarget - this.scrollCur;
+      }
+      // 速度上限隨剩餘距離變：近距離維持慢速（看得清字），差越多走越快，接近時上限跟著降＝自然減速
+      const vmax = Math.abs(err) <= SCROLL_NEAR ? SCROLL_VMAX
+        : Math.min(SCROLL_VMAX_FAR, SCROLL_VMAX + (Math.abs(err) - SCROLL_NEAR) * SCROLL_ACCEL);
+      const want = clamp(err * 9, -vmax, vmax);
       this.scrollVel = damp(this.scrollVel, want, 36, dt);   // 36 ≈ 4×9：臨界阻尼，不超過頭
       this.scrollCur += this.scrollVel * dt;
       if (Math.abs(err) < 0.002 && Math.abs(this.scrollVel) < 0.02) { this.scrollCur = this.scrollTarget; this.scrollVel = 0; }
@@ -970,6 +1262,13 @@ export class StackScene {
         this.motionLevel = Math.max(this.motionLevel, Math.abs(s.yOff + s.opacity - before));
         s.d = u; s.scale = ps.scale;
         s.bend = ps.bend;
+        // 遠卡滾進近窗：共用灰骨架升級回帶標題的專屬 placeholder（一張只升級一次；
+        // 真縮圖若已排隊/到貨，applyThumb 會蓋掉它）
+        if (s.phShared && s.file && Math.abs(u) <= NEAR_PH) {
+          s.mesh.material.map = this.placeholderTex(s.file);
+          s.mesh.material.needsUpdate = true;
+          s.phShared = false;
+        }
         const cosA = Math.cos(ps.rot), sinA = Math.sin(ps.rot);
         // 選取／閱讀完全不動卡片的位置（不走 readLift）：點一張卡只是開閱讀欄，
         // 卡還是在弧線上原本那一格。翻走時也就沒有「先墊高、再掉回去」那一下，
@@ -1068,7 +1367,10 @@ export class StackScene {
         this.countEl.style.left = right + 'px';
       }
       const vb = this._viewBar || (this._viewBar = document.getElementById('viewBar'));
-      if (vb) { vb.style.left = Math.round(this.viewCss.x + 14) + 'px'; vb.style.display = this.viewCss.w > 360 ? '' : 'none'; }
+      if (vb) {
+        vb.style.left = Math.round(this.viewCss.x + 14) + 'px';
+        vb.classList.toggle('narrow', !(this.viewCss.w > 360));
+      }
       // 路徑列貼左上、讓出右上張數；首次提示卡置中在堆視區下方
       const pb = this.pathBarEl;
       if (pb) { pb.style.left = Math.round(this.viewCss.x + 14) + 'px'; pb.style.maxWidth = Math.max(120, Math.round(this.viewCss.w - 130)) + 'px'; }
@@ -1099,6 +1401,7 @@ export class StackScene {
       if (!s.file) continue;
       s.mesh.material.map = this.placeholderTex(s.file);
       s.mesh.material.needsUpdate = true;
+      s.phShared = false;
       s.thumbReqPath = null;
     }
     this.poke();
@@ -1119,6 +1422,7 @@ export class StackScene {
         s.mesh.material.map = tex;
         s.mesh.material.needsUpdate = true;
         s.texName = texName;            // 貼圖身分 = 來源檔名（e2e 斷言用）
+        s.phShared = false;
       }
     }
     this.poke();

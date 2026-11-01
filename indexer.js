@@ -38,7 +38,8 @@ function createIndexer(deps) {
     lastCrawlAt: null,
     schedule, crawlAll, crawlRoot, stop,
     search, deepCounts, status, reindexDir, noteListDir, noteSearchOutside,
-    renamed, removed, setContentEnabled, secretFlags, directCounts, listPage
+    renamed, removed, setContentEnabled, secretFlags, directCounts, listPage,
+    recentModified
   };
   if (!sqlite) return idx;
 
@@ -583,6 +584,86 @@ function createIndexer(deps) {
         .all(dirRow.id, ...ext.args, limit, off);
       return { total, rows };
     } catch (_) { return null; }
+  }
+
+  // ---------- 「最近改動（不確定是誰改的）」(/api/recentmod) ----------
+  // Files modified since cutoffMs under marker-project dirs — markers mirror
+  // server.js detectAI: a direct child file named agents.md/claude.md/gemini.md,
+  // a child dir in {.claude,.cursor,.git}, or >=5 markdown files in one dir.
+  // Index-only (no filesystem walk), project set memoized (gen-moved + 30 s TTL).
+  // excludeNorms: normKey'd paths already attributed to AI conversations —
+  // dropped here so the two lists never mix. Returns rows or null on failure.
+  const RECENT_MOD_MAX_PROJECTS = 800;
+  const RECENT_MOD_LIMIT = 1200;
+  let rmProjectsCache = { gen: -2, t: 0, set: null };
+
+  function recentModProjects() {
+    const now = Date.now();
+    const gen = currentGen();
+    const c = rmProjectsCache;
+    if (c.set && c.gen === gen) return c.set;
+    if (c.set && now - c.t < 30000) return c.set;   // watchers tick gen often; don't rescan the markers every poll
+    const d = openRead();
+    if (!d) return c.set || new Set();
+    const projs = new Set();
+    try {
+      const markerIds = [];
+      for (const r of rprep("SELECT DISTINCT dirid FROM files WHERE lower(name) IN ('agents.md','claude.md','gemini.md')").all()) markerIds.push(r.dirid);
+      // same >=5-markdown heuristic as detectAI
+      for (const r of rprep("SELECT dirid FROM files WHERE ext IN ('.md','.markdown') GROUP BY dirid HAVING COUNT(*) >= 5").all()) markerIds.push(r.dirid);
+      for (let i = 0; i < markerIds.length; i += 400) {
+        const slice = markerIds.slice(i, i + 400);
+        for (const r of rprep(`SELECT path FROM dirs WHERE id IN (${slice.map(() => '?').join(',')})`).all(...slice)) projs.add(r.path);
+      }
+      // marker dirs (.claude/.cursor/.git): the PARENT is the project folder. GLOB so
+      // the case-folded norm column still matches; separator is platform-correct.
+      for (const name of ['.claude', '.cursor', '.git']) {
+        for (const r of rprep('SELECT path FROM dirs WHERE path GLOB ?').all('*' + SEP + name)) {
+          projs.add(r.path.slice(0, r.path.length - name.length - 1));
+        }
+      }
+    } catch (_) { return c.set || new Set(); }   // busy mid-crawl: serve the previous set
+    rmProjectsCache = { gen, t: now, set: projs };
+    return projs;
+  }
+
+  function recentModified(cutoffMs, excludeNorms) {
+    if (!idx.available) return null;
+    const d = openRead();
+    if (!d) return null;
+    const projs = [...recentModProjects()];
+    if (!projs.length) return [];
+    if (projs.length > RECENT_MOD_MAX_PROJECTS) projs.length = RECENT_MOD_MAX_PROJECTS;
+    const out = [];
+    const seen = new Set();
+    const fold = IS_WIN ? s => s.toLowerCase() : s => s;
+    for (let i = 0; i < projs.length; i += 200) {
+      const slice = projs.slice(i, i + 200);
+      const ups = slice.map(n => underPrefix('d.path', n));
+      const args = ups.flatMap(u => u.args);
+      let rows;
+      try {
+        rows = rprep(`SELECT COALESCE(d.rpath, d.path) AS dp, f.name, f.size, f.mtime, f.ext, f.kind
+            FROM files f JOIN dirs d ON d.id = f.dirid
+            WHERE f.mtime >= ? AND (${ups.map(u => u.sql).join(' OR ')})
+            ORDER BY f.mtime DESC LIMIT ?`).all(cutoffMs, ...args, RECENT_MOD_LIMIT);
+      } catch (_) { return null; }
+      for (const r of rows) {
+        const full = path.join(r.dp, r.name);
+        const k = fold(full.replace(/\\/g, '/'));
+        if (seen.has(k)) continue;
+        seen.add(k);
+        if (excludeNorms && (excludeNorms.has(full.replace(/\\/g, '/')) || excludeNorms.has(fold(full.replace(/\\/g, '/'))))) continue;
+        const ln = String(r.name).toLowerCase();
+        if (ln === 'index.db' || ln === 'index.db-wal' || ln === 'index.db-shm') continue;
+        if (ln.startsWith('.rdtmp-')) continue;
+        if (/(^|\/)\.(claude|cursor|git)\//.test(k)) continue;   // marker-tool internals churn constantly
+        out.push({ name: r.name, path: full, size: r.size, mtime: r.mtime, ext: r.ext, kind: r.kind });
+      }
+    }
+    out.sort((a, b) => b.mtime - a.mtime);
+    if (out.length > RECENT_MOD_LIMIT) out.length = RECENT_MOD_LIMIT;
+    return out;
   }
 
   return idx;

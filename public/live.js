@@ -67,7 +67,12 @@ function resetPill() {
 function openStream(path) {
   if (es) { try { es.close(); } catch (_) {} es = null; }
   watchPath = path || '';
-  const qs = watchPath ? '?path=' + encodeURIComponent(watchPath) : '';
+  const q = [];
+  if (watchPath) q.push('path=' + encodeURIComponent(watchPath));
+  // 側邊欄精簡模式：告訴伺服器這個客戶不能開檔（沒有閱讀欄），
+  // 投影／疊的廣播會跳過它，delivered 只數完整視窗（側邊欄據此決定是否改開新分頁）。
+  if (deps && deps.panel) q.push('panel=1');
+  const qs = q.length ? '?' + q.join('&') : '';
   try { es = new EventSource('/api/events' + qs); } catch (_) { es = null; return; }
   es.addEventListener('dir', ev => {
     if (Date.now() < ignoreUntil) return;
@@ -94,6 +99,15 @@ function openStream(path) {
     let d;
     try { d = JSON.parse(ev.data); } catch (_) { return; }
     handlePile(d);
+  });
+  // 瀏覽器擴充推了新的分頁清單（POST /api/tabs）→ 分頁模式開著就重抓（tabs.js 自己防抖）
+  es.addEventListener('tabs', () => { if (deps.onTabs) deps.onTabs(); });
+  // 側邊欄按了「回到完整畫面」（POST /api/tabs/focus，伺服器只發給非側欄客戶端）
+  // → 完整視窗捲到那張卡（沒在分頁模式會先進去）。
+  es.addEventListener('tabfocus', ev => {
+    let d;
+    try { d = JSON.parse(ev.data); } catch (_) { return; }
+    if (deps.onTabFocus) deps.onTabFocus(d.tabId);
   });
   // EventSource reconnects by itself on drops; onerror is silently ignored.
 }

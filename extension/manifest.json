@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "RiffleDesk Tabs Bridge",
+  "version": "0.1.0",
+  "description": "Pushes your open tabs to the local RiffleDesk file browser (127.0.0.1) so they show up as cards. Nothing leaves the machine.",
+  "permissions": ["tabs", "scripting", "storage", "alarms", "sidePanel", "idle", "sessions"],
+  "host_permissions": ["<all_urls>"],
+  "minimum_chrome_version": "114",
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["defaults.js", "i18n.js", "drawer.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["sidepanel.html", "icons/icon-32.png"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "externally_connectable": { "matches": ["http://127.0.0.1/*", "http://localhost/*"] },
+  "icons": { "32": "icons/icon-32.png", "128": "icons/icon-128.png" },
+  "action": {
+    "default_title": "開關 RiffleDesk 側邊欄（回到完整視窗：Alt+Shift+R）",
+    "default_icon": { "32": "icons/icon-32.png" }
+  },
+  "commands": {
+    "focus-riffledesk": {
+      "suggested_key": { "default": "Alt+Shift+R" },
+      "description": "把開著的 RiffleDesk 帶到前景（沒開就開一個）",
+      "global": true
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; frame-src http://127.0.0.1:*/; connect-src http://127.0.0.1:*/"
+  }
+}

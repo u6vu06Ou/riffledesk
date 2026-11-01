@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"pi-1","timestamp":"@@T60@@","cwd":"@@CWD@@"}
+{"type":"session_info","name":"Pi 整理採購清單","timestamp":"@@T59@@"}
+{"type":"message","id":"m1","parentId":null,"timestamp":"@@T58@@","message":{"role":"user","content":[{"type":"text","text":"幾樣東西要排"}]}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"@@T55@@","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc1","name":"write","arguments":{"path":"@@PI_A@@","content":"x"}},{"type":"text","text":"好了"}]}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"@@T54@@","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc2","name":"edit","arguments":{"path":"@@PI_B@@","oldText":"a","newText":"b"}}]}}

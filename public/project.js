@@ -233,6 +233,28 @@ async function openPath(path, line) {
   return (await deps.openPath(path, line)) === true;
 }
 
+// 背景時 AI 分開推了好幾個檔（N 次 open）：點通知或回到前景時全部一起看——
+// 收成一疊（同 riffledesk show），不是只開最後一個。只有一個檔就照舊直接開。
+const selfPileIds = new Set();    // 自己為了合併而建的疊：SSE 回來時不要再跳一次「新的疊」提示
+async function openPendingAll(list) {
+  const uniq = [];
+  for (const r of list) if (!uniq.some(u => u.path === r.path)) uniq.push(r);
+  if (uniq.length <= 1) {
+    const one = uniq[0];
+    return one ? openPath(one.path, one.line) : false;
+  }
+  try {
+    const r = await fetch('/api/pile', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paths: uniq.map(u => u.path), title: t('projNotifMany', { n: uniq.length }), source: 'notif-merge' })
+    });
+    const d = await r.json();
+    if (d && d.ok && d.id) { selfPileIds.add(d.id); return openPile(d.id, null); }
+  } catch (_) { /* 建疊失敗就退回只開最後一個 */ }
+  const last = uniq[uniq.length - 1];
+  return openPath(last.path, last.line);
+}
+
 // A projection that arrived as a URL (?open=…&line=N): the CLI opens such a page when no
 // tab is connected. It goes into the recent list like any other projection, but it always
 // opens right away — a page the user asked for must not be held back as if the tab were
@@ -306,9 +328,9 @@ function showNotification() {
     notif.onclick = () => {
       try { window.focus(); } catch (_) {}
       if (deps && pending.length) {
-        const top = pending[pending.length - 1];
+        const all = pending;
         pending = [];
-        openPath(top.path, top.line);
+        openPendingAll(all);
       }
       try { notif.close(); } catch (_) {}
       notif = null;
@@ -336,10 +358,10 @@ function onForeground() {
     pilePending = null;
   }
   if (!pending.length) return;
-  const last = pending[pending.length - 1];
+  const all = pending;
   pending = [];
   if (notif) { try { notif.close(); } catch (_) {} notif = null; }
-  openPath(last.path, last.line);
+  openPendingAll(all);
 }
 
 // ------------------------------------------------------------------ event entry point
@@ -420,6 +442,8 @@ function showPileNotification() {
 
 export function handlePile(data) {
   if (!data || typeof data.id !== 'string' || !data.id) return;
+  const mine = selfPileIds.has(data.id) || data.source === 'notif-merge';
+  selfPileIds.delete(data.id);
   const rec = {
     id: data.id,
     title: typeof data.title === 'string' && data.title ? data.title : t('pileNoTitle'),
@@ -427,6 +451,7 @@ export function handlePile(data) {
     at: data.at || Date.now()
   };
   pushPile(rec);
+  if (mine) return;                // 自己合併出來的疊：已經打開了，不用再提示
   pilePending = rec;
   // reuse the projection merge window: a burst of piles collapses into one notice
   scheduleFlushPile();

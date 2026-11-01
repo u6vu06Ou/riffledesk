@@ -85,9 +85,28 @@ riffledesk --help
 
 - **只走 loopback。** 伺服器聽 `127.0.0.1`，只回 loopback 的 `Host`，跨站 API 呼叫一律拒絕（`Sec-Fetch-Site`＋每個寫入都要 `Origin`），並且每個回應都帶 `Cross-Origin-Resource-Policy: same-origin`——外面的網頁讀不到你的檔。
 - **沒有遙測、不上雲。** 什麼都不離開這台機器。（three.js、marked、DOMPurify、SheetJS 從 CDN 載、固定版本＋SRI，所以「頁面本身」需要網路；highlight.js 是內附的，離線可用。）
-- **它讀哪些對話紀錄。** 為了做「AI 最近給的」和對話清單，伺服器會在**本機**讀 Claude Code 的 `~/.claude/projects/*/*.jsonl` 和 Codex 的 `~/.codex*/sessions/**/*.jsonl` 裡的寫檔紀錄。只抽檔案路徑、標題、時間，不上傳，解析結果按 size+mtime 快取。
+- **它讀哪些對話紀錄。** 為了做「AI 最近給的」和對話清單，伺服器會在**本機**讀支援清單內各工具的寫檔紀錄（Claude Code、Codex、Gemini CLI、Cline／Roo Code／Kilo Code、Pi、Grok Build——位置見下表）。只抽檔案路徑、標題、時間，不上傳，解析結果按 size+mtime 快取。
 - **關掉它。** `config.json` 寫 `convoRoots: []` 就完全不做對話掃描；`convoRoots: [{kind, dir}]` 可指向別的目錄。刪掉 `index.db*` 就清掉索引裡所有路徑名稱。
 - **瀏覽範圍**預設是所有本機磁碟加上家目錄文件。這是刻意的寬；`config.json` 的 `roots` 可以收窄。
+
+## 支援哪些 AI 工具
+
+對話側欄讀的是各工具自己寫下的紀錄檔——**跟終端機／IDE 無關，只看 AI 工具的紀錄檔放在哪**。
+
+| 工具 | 支援 | 紀錄位置 |
+|---|---|---|
+| Claude Code（CLI、VS Code／JetBrains 擴充、桌面 App 的 Code 分頁） | ✅ | `~/.claude/projects/*/*.jsonl` |
+| Codex（CLI、桌面 App、VS Code 擴充） | ✅ | `~/.codex*/sessions/**/rollout-*.jsonl` |
+| Gemini CLI | ✅ | `~/.gemini/tmp/<專案>/chats/**`（`GEMINI_CLI_HOME` 可換家目錄） |
+| Cline／Roo Code／Kilo Code（VS Code 擴充，舊版面） | ✅ | VS Code globalStorage `*/tasks/<taskId>/api_conversation_history.json` |
+| Pi（badlogic/pi-mono） | ✅ | `~/.pi/agent/sessions/**/*.jsonl`（`PI_CODING_AGENT_SESSION_DIR` 可換） |
+| Grok Build（xAI 官方 coding agent） | ✅ | `~/.grok/sessions/*/*/updates.jsonl`（`GROK_HOME` 可換） |
+| Cursor、Windsurf、GitHub Copilot、opencode（現行版）、Kilo Code（2026 改版）、superagent-ai/grok-cli | ❌ | SQLite／私有格式，不解析 |
+| Aider | ❌ | 各專案的 `.aider.chat.history.md`；用「最近改動」涵蓋 |
+
+註：Cursor／Windsurf 自身歷史不解析，但裝在它們裡面的 Cline 家族延伸會被掃描（其 globalStorage 在掃描清單內）。
+
+完整調查（每個位置、格式、來源網址、信心）在 [docs/ai-sources.md](docs/ai-sources.md)。不在支援清單的工具：叫 AI 跑 `riffledesk open <檔>`／`riffledesk show …` 把檔案推進來，或用側欄的「**最近改動（不確定是誰改的）**」列——列出標記專案資料夾（有 AGENTS.md／CLAUDE.md／GEMINI.md／.claude／.cursor／.git，或同層 ≥5 個 Markdown）裡最近 7 天改過的檔案，扣掉確定是支援中的 AI 對話寫的。這列直接用既有索引查 mtime，不會再掃磁碟，需要索引在跑才看得到。
 
 ## 限制
 

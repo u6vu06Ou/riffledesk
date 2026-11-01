@@ -1,5 +1,7 @@
-// convos.js — scan AI coding-agent transcripts (Claude Code / Codex) and report which files
-// each conversation wrote. Zero dependencies, Node built-ins only.
+// convos.js — scan AI coding-agent transcripts (Claude Code / Codex / Gemini CLI /
+// Cline family / Pi / Grok Build) and report which files each conversation wrote.
+// Zero dependencies, Node built-ins only. Record formats verified 2026-11-01,
+// per-tool details + sources in docs/ai-sources.md.
 //
 // Claude Code: <home>/.claude/projects/<project-slug>/*.jsonl — one JSON object per line;
 //   assistant messages carry tool_use blocks ({"name":"Write|Edit|MultiEdit","input":{"file_path":…}}
@@ -10,6 +12,20 @@
 //   exec-wrapped patches arrive as a JS string literal whose newlines are two-char "\n"
 //   sequences — only n/t/r escapes are unfolded (paths keep single backslashes; a "\\n"
 //   sequence in patch CONTENT must NOT become a line break, or ghost Add File lines appear).
+// Gemini CLI: <gemhome>/tmp/<project-id>/chats/**/*.jsonl (+legacy single .json) — first
+//   line may be metadata {sessionId, directories:[cwd], kind:'main'|'subagent'}; records of
+//   type 'gemini' carry toolCalls ({name:'write_file'|'replace', args:{file_path}}).
+// Cline / Roo Code / Kilo Code (legacy): <editor>/User/globalStorage/<extId>/tasks/<id>/
+//   api_conversation_history.json — a whole-file Anthropic message array; tool_use blocks
+//   named write_to_file/replace_in_file/apply_diff/insert_content/apply_patch/edit_file
+//   with input.path. (Parsed whole-file, 64 MB cap — these files are JSON, not JSONL.)
+// Pi (badlogic/pi-mono): ~/.pi/agent/sessions/--<path>--/<ts>_<id>.jsonl — first line
+//   {"type":"session","cwd":…}; session_info.name is the title; assistant toolCall blocks
+//   carry names write/edit (multi_edit tolerated as an alias) with arguments.path.
+// Grok Build (xAI): ~/.grok/sessions/<encoded-cwd>/<session-id>/updates.jsonl — ACP
+//   session/update lines; tool_call updates identify the tool via _meta["x.ai/tool"].name
+//   (write/search_replace/edit/hashline_edit/apply_patch); sibling summary.json has the
+//   title. Only absolute paths count (the encoded-cwd dir name is not invertible).
 //
 // Transcripts are tens of MB: files are streamed line by line, only lines carrying the
 // file_path / patch markers (plus structurally interesting meta/user lines) are JSON.parsed,
@@ -22,6 +38,27 @@ const { StringDecoder } = require('node:string_decoder');
 
 const IS_WIN = process.platform === 'win32';
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+// ---------------- per-tool registries (formats verified 2026-11-01; docs/ai-sources.md) ----------------
+// kind = internal id used in Acc.agent / mergeId prefixes; label = UI tag for public/main.js.
+const KIND_LABEL = {
+  claude: 'Claude', codex: 'Codex', gemini: 'Gemini',
+  cline: 'Cline', roo: 'Roo Code', kilo: 'Kilo Code',
+  pi: 'Pi', grok: 'Grok Build'
+};
+const KNOWN_KINDS = new Set(Object.keys(KIND_LABEL));
+// tool names that count as "the AI wrote this file", per kind
+const WRITE_GEMINI = new Set(['write_file', 'replace']);
+const WRITE_CLINE = new Set(['write_to_file', 'replace_in_file', 'apply_diff', 'insert_content', 'apply_patch', 'edit_file']);
+const WRITE_PI = new Set(['write', 'edit', 'multi_edit']);
+const WRITE_GROK = new Set(['write', 'search_replace', 'edit', 'hashline_edit', 'apply_patch']);
+// VS Code-family editors whose globalStorage may hold Cline-family task dirs
+const VSCODE_EDITORS = ['Code', 'Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf'];
+const CLINE_FAMILY_EXT_TASKS = [
+  ['saoudrizwan.claude-dev', 'cline'],
+  ['rooveterinaryinc.roo-cline', 'roo'],
+  ['kilocode.kilo-code', 'kilo']
+];
 const MAX_TITLE = 80;
 const MAX_TITLE_PARSE = 8 * 1024 * 1024; // first messages often carry pasted screenshots (base64)      // a user line longer than this and without markers is never a title
 const MAX_LINE_BUF = 8 * 1024 * 1024; // one pathological mega-line may not eat unbounded memory
@@ -45,7 +82,45 @@ function defaultRoots(home = os.homedir()) {
     const dir = path.join(home, e.name, 'sessions');
     try { if (fs.statSync(dir).isDirectory()) roots.push({ kind: 'codex', dir }); } catch (_) {}
   }
+  // Gemini CLI: GEMINI_CLI_HOME replaces the ~/.gemini base; sessions under <base>/tmp/<id>/chats/
+  const gemHome = (process.env.GEMINI_CLI_HOME || '').trim() || path.join(home, '.gemini');
+  // stat-checked pushes only: a machine without the tool must not walk 18 dead dirs per scan
+  const pushIfDir = (kind, dir) => {
+    try { if (fs.statSync(dir).isDirectory()) roots.push({ kind, dir }); } catch (_) {}
+  };
+  pushIfDir('gemini', path.join(gemHome, 'tmp'));
+  // Pi (badlogic/pi-mono)
+  pushIfDir('pi', (process.env.PI_CODING_AGENT_SESSION_DIR || '').trim() || path.join(home, '.pi', 'agent', 'sessions'));
+  // Grok Build (xAI)
+  const grokHome = (process.env.GROK_HOME || '').trim() || path.join(home, '.grok');
+  pushIfDir('grok', path.join(grokHome, 'sessions'));
+  // Cline family (VS Code editors' globalStorage)
+  const vscBase = IS_WIN
+    ? (process.env.APPDATA || path.join(home, 'AppData', 'Roaming'))
+    : process.platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support')
+      : (process.env.XDG_CONFIG_HOME || path.join(home, '.config'));
+  for (const ed of VSCODE_EDITORS) {
+    const gs = path.join(vscBase, ed, 'User', 'globalStorage');
+    for (const [extId, kind] of CLINE_FAMILY_EXT_TASKS) {
+      pushIfDir(kind, path.join(gs, extId, 'tasks'));
+    }
+  }
   return roots;
+}
+
+// best-effort kind guess for plain-string config roots; explicit {kind,dir} objects win.
+// Anchor on the real marker segments — a bare /cline/i would eat Roo's extension id
+// (rooveterinaryinc.roo-cline) and bare /grok/i would eat a random "grokify" checkout.
+function stringKind(s) {
+  if (/codex/i.test(s)) return 'codex';
+  if (/roo-cline|rooveterinaryinc/i.test(s)) return 'roo';
+  if (/kilo-code|kilocode/i.test(s)) return 'kilo';
+  if (/cline|claude-dev/i.test(s)) return 'cline';
+  if (/[\\/]\.?gemini[-\\/]/i.test(s)) return 'gemini';      // .gemini/, gemini-cli/, gemini-home/
+  if (/[\\/]\.pi[\\/]|pi[\\/]agent[\\/]sessions/i.test(s)) return 'pi';
+  if (/[\\/]\.?grok[-\\/]/i.test(s)) return 'grok';          // .grok/, grok-build… but not "grokify"
+  return /claude/i.test(s) ? 'claude' : 'codex';   // legacy default for unknown strings
 }
 
 // config accepts plain strings (".../.claude/projects") or objects ({kind, dir})
@@ -53,9 +128,12 @@ function normalizeRoots(roots) {
   if (!Array.isArray(roots)) return defaultRoots();   // unset → platform defaults; [] → scan nothing
   const out = [];
   for (const r of roots) {
-    const ro = typeof r === 'string'
-      ? { kind: /claude/i.test(r) ? 'claude' : 'codex', dir: r }
-      : (r && r.dir ? { kind: r.kind === 'codex' ? 'codex' : 'claude', dir: r.dir } : null);
+    let ro = null;
+    if (typeof r === 'string') ro = { kind: stringKind(r), dir: r };
+    else if (r && r.dir) {
+      const k = String(r.kind || '').trim().toLowerCase();
+      ro = { kind: KNOWN_KINDS.has(k) ? k : stringKind(r.dir), dir: r.dir };
+    }
     if (!ro) continue;
     try { if (fs.statSync(ro.dir).isDirectory()) out.push(ro); } catch (_) {}
   }
@@ -85,8 +163,10 @@ function scanLines(file, onLine) {
     const dec = new StringDecoder('utf8');
     let buf = '';
     const rs = fs.createReadStream(file, { highWaterMark: 512 * 1024 });
+    let head = true;
     rs.on('data', chunk => {
       buf += dec.write(chunk);
+      if (head) { head = false; if (buf.charCodeAt(0) === 0xFEFF) buf = buf.slice(1); }  // UTF-8 BOM would blank the metadata line
       let start = 0, idx;
       while ((idx = buf.indexOf('\n', start)) !== -1) {
         onLine(buf.slice(start, idx));
@@ -297,6 +377,273 @@ async function parseCodex(abs, sessionsDir) {
   return [acc];
 }
 
+// ---------------- Gemini CLI ----------------
+// One message per record: {id, timestamp, type:'user'|'gemini'|…, content:[{text}]};
+// 'gemini' records carry toolCalls:[{name, args:{file_path}}]. The first line may be a
+// metadata record {sessionId, projectHash, directories:[cwd], kind:'main'|'subagent'}
+// (no `type` field). Legacy sessions are one whole .json object with a messages[] array.
+const gemMetaSeen = new WeakSet();  // only the first metadata record may fix id/cwd; later $set rewrites must not
+function geminiRecord(acc, d, rel, forbid) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return;
+  // metadata record: no `type`, carries sessionId (+ $set-merged rewrites look the same)
+  if (!d.type && typeof d.sessionId === 'string') {
+    if (!gemMetaSeen.has(acc)) {
+      gemMetaSeen.add(acc);
+      acc.id = d.sessionId;
+      if (Array.isArray(d.directories) && d.directories[0] && isAbsLike(d.directories[0])) {
+        acc.cwd = d.directories[0]; acc.project = d.directories[0];
+      }
+    }
+    if (d.kind === 'subagent') acc.auto = true;
+    const t = Date.parse(d.startTime || '') || Date.parse(d.lastUpdated || '') || 0;
+    if (t) acc.ts(t);
+    return;
+  }
+  const ts = Date.parse(d.timestamp || '') || 0;
+  if (ts) acc.ts(ts);
+  if (d.kind === 'subagent') acc.auto = true;
+  if (Array.isArray(d.directories) && d.directories[0] && isAbsLike(d.directories[0]) && !acc.cwd) {
+    acc.cwd = d.directories[0]; acc.project = d.directories[0];
+  }
+  if (Array.isArray(d.toolCalls)) {
+    for (const tc of d.toolCalls) {
+      if (!tc || !WRITE_GEMINI.has(tc.name)) continue;
+      const fp = tc.args && tc.args.file_path;
+      if (typeof fp !== 'string' || !fp) continue;
+      const t = Date.parse(tc.timestamp || '') || ts;
+      if (isAbsLike(fp)) acc.addFile(fp, t, acc.cwd, forbid);
+      else rel.push({ p: fp, ts: t });
+    }
+    return;
+  }
+  if (d.type === 'user' && !acc.title) {
+    const c = d.content;
+    const text = typeof c === 'string' ? c : (Array.isArray(c) ? c.map(b => (b && b.text) || '').join('\n') : '');
+    const tt = cleanTitle(text);
+    if (tt) acc.title = tt;
+  }
+}
+
+async function parseGeminiJsonl(abs, tmpDir) {
+  const forbid = normKey(tmpDir) + '/';
+  const acc = new Acc('gemini', path.basename(abs).replace(/\.jsonl$/i, ''), '');
+  const rel = [];
+  await scanLines(abs, line => {
+    if (line.charCodeAt(0) !== 123) return;
+    const isTool = line.includes('"toolCalls"');
+    if (!isTool) {
+      const isMeta = line.includes('"sessionId"');
+      if (!isMeta) {
+        if (!line.includes('"type":"user"')) return;
+        if (acc.title || line.length > MAX_TITLE_PARSE) return;
+      }
+    }
+    let d;
+    try { d = JSON.parse(line); } catch (_) { return; }
+    geminiRecord(acc, d, rel, forbid);
+  });
+  for (const { p, ts } of rel) acc.addFile(p, ts, acc.cwd || path.dirname(abs), forbid);
+  return [acc];
+}
+
+async function parseGeminiJson(abs, tmpDir) {
+  const forbid = normKey(tmpDir) + '/';
+  const acc = new Acc('gemini', path.basename(abs).replace(/\.json$/i, ''), '');
+  let st;
+  try { st = fs.statSync(abs); } catch (_) { return [acc]; }
+  if (st.size > 64 * 1024 * 1024) return [acc];   // legacy single-object sessions: cap the one-shot parse
+  let d;
+  try { d = JSON.parse(fs.readFileSync(abs, 'utf8')); } catch (_) { return [acc]; }
+  if (!d || typeof d !== 'object') return [acc];
+  const rel = [];
+  geminiRecord(acc, d, rel, forbid);                                     // top-level metadata
+  for (const m of Array.isArray(d.messages) ? d.messages : []) geminiRecord(acc, m, rel, forbid);
+  for (const { p, ts } of rel) acc.addFile(p, ts, acc.cwd || path.dirname(abs), forbid);
+  return [acc];
+}
+
+function parseGemini(abs, tmpDir) {
+  return /\.json$/i.test(abs) ? parseGeminiJson(abs, tmpDir) : parseGeminiJsonl(abs, tmpDir);
+}
+
+// ---------------- Cline / Roo Code / Kilo Code (legacy layout) ----------------
+// <globalStorage>/<extId>/tasks/<taskId>/api_conversation_history.json — a whole-file
+// Anthropic message array; messages may carry `ts` (ms). Write tools use input.path.
+// The file has no cwd, so relative paths resolve against the tasks dir (harmless: they
+// simply never `exists`).
+async function parseCline(abs, tasksDir, agent) {
+  const forbid = normKey(tasksDir) + '/';
+  const bn = path.basename(abs);
+  const id = /^api_conversation_history\.json$/i.test(bn)
+    ? path.basename(path.dirname(abs))
+    : bn.replace(/\.json$/i, '');
+  const acc = new Acc(agent, id, '');
+  let st;
+  try { st = fs.statSync(abs); } catch (_) { return [acc]; }
+  if (st.size > 64 * 1024 * 1024) return [acc];  // whole-file parse cap (JSON, not JSONL) — one JSON.parse of this size already stalls the loop for ~a second
+  let d;
+  try { d = JSON.parse(fs.readFileSync(abs, 'utf8')); } catch (_) { return [acc]; }
+  const msgs = Array.isArray(d) ? d : (d && Array.isArray(d.messages) ? d.messages : []);
+  const rel = [];
+  for (const m of msgs) {
+    if (!m || typeof m !== 'object') continue;
+    const ts = typeof m.ts === 'number' ? m.ts : (Date.parse(m.timestamp || '') || 0);
+    if (ts) acc.ts(ts);
+    const c = m.content;
+    if (m.role === 'user') {
+      if (!acc.title) {
+        const text = typeof c === 'string' ? c
+          : (Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join('\n') : '');
+        const tt = cleanTitle(text);
+        if (tt) acc.title = tt;
+      }
+      continue;
+    }
+    if (m.role !== 'assistant' || !Array.isArray(c)) continue;
+    for (const b of c) {
+      if (!b || b.type !== 'tool_use') continue;
+      const name = String(b.name || '');
+      if (!WRITE_CLINE.has(name)) continue;
+      const input = b.input || {};
+      const fp = input.path || input.file_path || input.target_file;
+      if (typeof fp === 'string' && fp) {
+        if (isAbsLike(fp)) acc.addFile(fp, ts, null, forbid); else rel.push({ p: fp, ts });
+      }
+      if (name === 'apply_patch' && typeof input.patch === 'string') {
+        RE_PATCH_FILE.lastIndex = 0;
+        let m2;
+        while ((m2 = RE_PATCH_FILE.exec(input.patch))) {
+          const p = m2[1].trim().replace(/^["'`]+|["'`]+$/g, '');
+          if (!p) continue;
+          if (isAbsLike(p)) acc.addFile(p, ts, null, forbid); else rel.push({ p, ts });
+        }
+      }
+    }
+  }
+  for (const { p, ts } of rel) acc.addFile(p, ts, path.dirname(abs), forbid);
+  return [acc];
+}
+
+// ---------------- Pi (badlogic/pi-mono) ----------------
+// First line: {"type":"session","version":3,"id","timestamp","cwd"}; session_info carries
+// the title in `name`; assistant toolCall blocks use names write/edit (multi_edit tolerated) with arguments.path.
+async function parsePi(abs, sessionsDir) {
+  const forbid = normKey(sessionsDir) + '/';
+  const acc = new Acc('pi', path.basename(abs, '.jsonl'), '');
+  const rel = [];
+  await scanLines(abs, line => {
+    if (line.charCodeAt(0) !== 123) return;
+    const hasCall = line.includes('"toolCall"');
+    if (!hasCall) {
+      const metaish = line.includes('"type":"session"') || line.includes('"session_info"');
+      if (!metaish && !(line.includes('"role":"user"') && !acc.title && line.length <= MAX_TITLE_PARSE)) return;
+    }
+    let d;
+    try { d = JSON.parse(line); } catch (_) { return; }
+    const ts = Date.parse(d.timestamp || '') || 0;
+    if (d.type === 'session') {
+      if (typeof d.id === 'string' && d.id) acc.id = d.id;
+      if (typeof d.cwd === 'string' && d.cwd) { acc.cwd = d.cwd; acc.project = d.cwd; }
+      if (ts) acc.ts(ts);
+      return;
+    }
+    if (d.type === 'session_info') {
+      if (!acc.title && typeof d.name === 'string') { const tt = cleanTitle(d.name); if (tt) acc.title = tt; }
+      return;
+    }
+    const m = d.message;
+    if (!m || typeof m !== 'object') return;
+    if (ts) acc.ts(ts);
+    if (m.role === 'user') {
+      if (acc.title) return;
+      const c = m.content;
+      const text = typeof c === 'string' ? c
+        : (Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join('\n') : '');
+      const tt = cleanTitle(text);
+      if (tt) acc.title = tt;
+      return;
+    }
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) return;
+    for (const b of m.content) {
+      if (!b || b.type !== 'toolCall' || !WRITE_PI.has(b.name)) continue;
+      const fp = b.arguments && (b.arguments.path || b.arguments.file_path);
+      if (typeof fp !== 'string' || !fp) continue;
+      if (isAbsLike(fp)) acc.addFile(fp, ts, acc.cwd, forbid); else rel.push({ p: fp, ts });
+    }
+  });
+  for (const { p, ts } of rel) acc.addFile(p, ts, acc.cwd || path.dirname(abs), forbid);
+  return [acc];
+}
+
+// ---------------- Grok Build (xAI) ----------------
+// <encoded-cwd>/<session-id>/updates.jsonl: ACP session/update lines. Tool identity lives
+// in update._meta["x.ai/tool"].name (title says e.g. "write" too); timestamps are unix
+// seconds. summary.json next to updates.jsonl carries the generated title.
+async function parseGrok(abs, sessionsRoot) {
+  const forbid = normKey(sessionsRoot) + '/';
+  const sidDir = path.dirname(abs);
+  const acc = new Acc('grok', path.basename(sidDir), '');
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(sidDir, 'summary.json'), 'utf8'));
+    if (s && typeof s.title === 'string') { const tt = cleanTitle(s.title); if (tt) acc.title = tt; }
+  } catch (_) {}
+  await scanLines(abs, line => {
+    if (line.charCodeAt(0) !== 123) return;
+    const isTool = line.includes('"tool_call"') && line.includes('x.ai/tool');
+    if (!isTool && !(line.includes('"user_message_chunk"') && !acc.title && line.length <= MAX_TITLE_PARSE)) return;
+    let d;
+    try { d = JSON.parse(line); } catch (_) { return; }
+    const ts = typeof d.timestamp === 'number' ? Math.round(d.timestamp * 1000) : 0;
+    if (ts) acc.ts(ts);
+    const params = d.params;
+    const up = params && params.update;
+    if (!up || typeof up !== 'object') return;
+    if (params.sessionId && typeof params.sessionId === 'string') acc.id = params.sessionId;
+    if (up.sessionUpdate === 'user_message_chunk') {
+      if (acc.title) return;
+      const c = up.content;
+      const text = typeof c === 'string' ? c : (c && typeof c.text === 'string' ? c.text : '');
+      const tt = cleanTitle(text);
+      if (tt) acc.title = tt;
+      return;
+    }
+    if (up.sessionUpdate !== 'tool_call') return;
+    const meta = up._meta && up._meta['x.ai/tool'];
+    const name = (meta && meta.name) || up.title;
+    if (!WRITE_GROK.has(name)) return;
+    const ri = up.rawInput || {};
+    const fp = ri.file_path || ri.path;
+    if (typeof fp === 'string' && fp && isAbsLike(fp)) { acc.addFile(fp, ts, null, forbid); }
+    // apply_patch style rawInput bodies: scan patch-ish string fields (but NOT `content`,
+    // whose text may legitimately contain "*** Add File:" lines — cf. codex ghost guard)
+    if (name === 'apply_patch') {
+      for (const k of ['patch', 'diff', 'input']) {
+        const v = ri[k];
+        if (typeof v !== 'string') continue;
+        RE_PATCH_FILE.lastIndex = 0;
+        let m2;
+        while ((m2 = RE_PATCH_FILE.exec(v))) {
+          const p = m2[1].trim().replace(/^["'`]+|["'`]+$/g, '');
+          if (p && isAbsLike(p)) acc.addFile(p, ts, null, forbid);
+        }
+      }
+    }
+    // cwd is not decodable from the encoded dir name: relative paths are dropped
+  });
+  return [acc];
+}
+
+const PARSERS = {
+  claude: parseClaude,
+  codex: parseCodex,
+  gemini: parseGemini,
+  cline: (abs, root) => parseCline(abs, root, 'cline'),
+  roo: (abs, root) => parseCline(abs, root, 'roo'),
+  kilo: (abs, root) => parseCline(abs, root, 'kilo'),
+  pi: parsePi,
+  grok: parseGrok
+};
+
 // finalize: exists flags + fileCount + mtime-floor for updated (a transcript's mtime is a
 // safe upper bound for "when was anything last written in this conversation"). exists is a
 // snapshot at scan time — a file deleted afterwards shows present until its transcript's
@@ -329,6 +676,17 @@ async function finalize(c, fileMtimeMs) {
 // /api/convos?days=N and /api/convo (cutoff 0) use different windows and share this cache.
 const fileCache = new Map(); // normKey(transcript) -> { size, mtimeMs, convos }
 
+function walkExt(dir, depth, onFile, re, maxDepth = 8) {
+  if (depth > maxDepth) return;
+  let ents;
+  try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+  for (const e of ents) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) walkExt(full, depth + 1, onFile, re, maxDepth);
+    else if (e.isFile() && re.test(full)) onFile(full);
+  }
+}
+
 function discover(root, cutoffMs, out) {
   const pushFile = (abs, slugDir) => {
     let st;
@@ -337,41 +695,72 @@ function discover(root, cutoffMs, out) {
     if (st.mtimeMs < cutoffMs) return;
     out.push({ abs, kind: root.kind, rootDir: root.dir, slugDir, size: st.size, mtimeMs: st.mtimeMs });
   };
-  if (root.kind === 'claude') {
-    let slugs;
-    try { slugs = fs.readdirSync(root.dir, { withFileTypes: true }); } catch (_) { return; }
-    for (const s of slugs) {
-      if (!s.isDirectory()) continue;
-      const sub = path.join(root.dir, s.name);
-      let files;
-      try { files = fs.readdirSync(sub, { withFileTypes: true }); } catch (_) { continue; }
-      for (const f of files) {
-        if (!f.isFile() || !f.name.endsWith('.jsonl')) continue;
-        pushFile(path.join(sub, f.name), sub);
+  switch (root.kind) {
+    case 'claude': {
+      // <root>/<project-slug>/<sid>.jsonl — one level of project dirs, flat .jsonl files
+      let slugs;
+      try { slugs = fs.readdirSync(root.dir, { withFileTypes: true }); } catch (_) { return; }
+      for (const s of slugs) {
+        if (!s.isDirectory()) continue;
+        const sub = path.join(root.dir, s.name);
+        let files;
+        try { files = fs.readdirSync(sub, { withFileTypes: true }); } catch (_) { continue; }
+        for (const f of files) {
+          if (!f.isFile() || !f.name.endsWith('.jsonl')) continue;
+          pushFile(path.join(sub, f.name), sub);
+        }
       }
+      return;
     }
-  } else {
-    const walk = (dir, depth) => {
-      if (depth > 8) return;
-      let ents;
-      try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
-      for (const e of ents) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full, depth + 1);
-        else if (e.isFile() && e.name.endsWith('.jsonl')) pushFile(full, dir);
+    case 'gemini': {
+      // <tmp>/<project-id>/chats/**/*.jsonl|.json — only the chats subtree (logs etc. skipped)
+      let ids;
+      try { ids = fs.readdirSync(root.dir, { withFileTypes: true }); } catch (_) { return; }
+      for (const it of ids) {
+        if (!it.isDirectory()) continue;
+        walkExt(path.join(root.dir, it.name, 'chats'), 0, abs => pushFile(abs, root.dir), /\.(jsonl|json)$/i);
       }
-    };
-    walk(root.dir, 0);
+      return;
+    }
+    case 'cline':
+    case 'roo':
+    case 'kilo': {
+      // <tasks>/<taskId>/api_conversation_history.json, plus legacy <tasks>/<taskId>.json
+      let ents;
+      try { ents = fs.readdirSync(root.dir, { withFileTypes: true }); } catch (_) { return; }
+      for (const e of ents) {
+        if (e.isFile() && e.name.endsWith('.json')) { pushFile(path.join(root.dir, e.name), root.dir); continue; }
+        if (!e.isDirectory()) continue;
+        const f = path.join(root.dir, e.name, 'api_conversation_history.json');
+        try { if (fs.statSync(f).isFile()) pushFile(f, root.dir); } catch (_) {}
+      }
+      return;
+    }
+    case 'grok':
+      // <sessions>/<encoded-cwd>/<session-id>/updates.jsonl (chat_history.jsonl skipped)
+      walkExt(root.dir, 0, abs => pushFile(abs, root.dir), /(^|[\\/])updates\.jsonl$/i);
+      return;
+    default: // codex, pi: recursive .jsonl
+      walkExt(root.dir, 0, abs => pushFile(abs, root.dir), /\.jsonl$/i);
   }
+}
+
+// for server.js's transcript-signature poller: the same file set scan() would parse
+function discoverFiles(root, cutoffMs = 0) {
+  const out = [];
+  discover(root, cutoffMs, out);
+  return out;
 }
 
 async function convosForFile(f) {
   const key = normKey(f.abs);
   const hit = fileCache.get(key);
   if (hit && hit.size === f.size && hit.mtimeMs === f.mtimeMs) return hit.convos;
+  const parser = PARSERS[f.kind];
+  if (!parser) return [];
   let parsed;
   try {
-    parsed = f.kind === 'claude' ? await parseClaude(f.abs, f.rootDir) : await parseCodex(f.abs, f.rootDir);
+    parsed = await parser(f.abs, f.rootDir);
   } catch (_) {
     return [];   // do NOT cache failures — a half-parsed transcript must be retried on the next scan
   }
@@ -432,4 +821,4 @@ function wroteFile(c, absPath) {
 
 function clearCache() { fileCache.clear(); }
 
-module.exports = { scan, defaultRoots, normalizeRoots, normKey, mergeId, wroteFile, clearCache };
+module.exports = { scan, defaultRoots, normalizeRoots, normKey, mergeId, wroteFile, clearCache, discoverFiles, KIND_LABEL };

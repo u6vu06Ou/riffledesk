@@ -113,6 +113,7 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.map': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.ico': 'image/x-icon',
   '.pdf': 'application/pdf',
@@ -1140,6 +1141,38 @@ async function apiRecent(res, u) {
   files.sort((a, b) => b.lastAt - a.lastAt);
   return sendJson(res, 200, { ok: true, hours, files, ms: Date.now() - t0 });
 }
+// 「最近改動（不確定是誰改的）」：marker-project folders (AGENTS.md/CLAUDE.md/GEMINI.md,
+// .claude/.cursor/.git, or >=5 markdown in one dir — same idea as detectAI) whose files
+// were modified within `hours`, MINUS everything an AI conversation provably wrote.
+// Indexer-only (no full-disk scan); degraded response when the index is unavailable.
+let recentModCache = null; // { t, hours, exts, files }
+async function apiRecentMod(res, u) {
+  const hours = Math.min(24 * 365, Math.max(1, Number(u.searchParams.get('hours')) || 24 * 7));
+  const extsRaw = u.searchParams.get('exts') || '';
+  const t0 = Date.now();
+  if (recentModCache && recentModCache.hours === hours && recentModCache.exts === extsRaw && Date.now() - recentModCache.t < 10000) {
+    return sendJson(res, 200, recentModCache.body);
+  }
+  const cutoff = t0 - hours * 3600000;
+  if (!indexer || !indexer.available || !indexer.recentModified) {
+    return sendJson(res, 200, { ok: true, hours, indexed: false, files: [], ms: Date.now() - t0 });
+  }
+  const aiPaths = new Set();
+  try {
+    const data = await convoScan(cutoff);
+    for (const c of data.convos) {
+      for (const f of c.files) if ((f.lastAt || f.firstAt || 0) >= cutoff) aiPaths.add(convos.normKey(f.path));
+    }
+  } catch (_) { /* scan failure must not blank the whole endpoint */ }
+  let rows;
+  try { rows = indexer.recentModified(cutoff, aiPaths); } catch (_) { rows = null; }
+  if (!rows) return sendJson(res, 200, { ok: true, hours, indexed: true, files: [], ms: Date.now() - t0 });
+  const filter = parseExts(extsRaw);
+  const files = rows.filter(r => extMatches(r.ext, filter));
+  const body = { ok: true, hours, indexed: true, files, ms: Date.now() - t0 };
+  recentModCache = { t: Date.now(), hours, exts: extsRaw, body };
+  return sendJson(res, 200, body);
+}
 async function apiWhichConvo(res, u) {
   const q = u.searchParams.get('path');
   if (!q) return sendJson(res, 400, { ok: false, error: 'missing path' });
@@ -1161,6 +1194,7 @@ async function apiWhichConvo(res, u) {
 const EVENT_MAX_CLIENTS = 8;
 const CONVO_POLL_MS = Math.max(200, Number(process.env.RIFFLEDESK_CONVO_POLL_MS) || 10000);
 const eventClients = new Set();              // live SSE responses
+const panelSse = new Set();                  // subset of eventClients opened with ?panel=1（側邊欄精簡模式）
 const dirWatchers = new Map();               // normKey -> { key, path, watcher, timer, snap:Set, subs:Set }
 const convoHub = { subs: new Set(), timer: null, sig: null };
 
@@ -1223,36 +1257,17 @@ function dirWatchRelease(w, res) {
 }
 
 // cheap change signal for the AI transcript roots: file count + total bytes +
-// newest mtime (sum-of-sizes catches appends, same walk cost as convos.js's
-// warm-cache scan). claude roots: one level of project dirs, flat .jsonl files
-// (mirrors convos.js); codex roots: recursive.
+// newest mtime over exactly the files convos.scan() would parse (convos.discoverFiles
+// knows each kind's on-disk layout), so a transcript write flips the signature.
 function convoTranscriptSig() {
   let files = 0, bytes = 0, newest = 0;
-  const statJsonl = (full) => {
-    try {
-      const st = fs.statSync(full);
-      files++; bytes += st.size; if (st.mtimeMs > newest) newest = st.mtimeMs;
-    } catch (_) {}
-  };
-  const acc = (dir, depth) => {
-    let ents;
-    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
-    for (const e of ents) {
-      if (e.isDirectory()) { if (depth < 6) acc(path.join(dir, e.name), depth + 1); continue; }
-      if (e.isFile() && e.name.endsWith('.jsonl')) statJsonl(path.join(dir, e.name));
-    }
-  };
   for (const r of convoRootsNow()) {
-    if (r.kind === 'claude') {
-      let ents;
-      try { ents = fs.readdirSync(r.dir, { withFileTypes: true }); } catch (_) { continue; }
-      for (const e of ents) {
-        if (!e.isDirectory()) continue;
-        let files2;
-        try { files2 = fs.readdirSync(path.join(r.dir, e.name), { withFileTypes: true }); } catch (_) { continue; }
-        for (const f of files2) if (f.isFile() && f.name.endsWith('.jsonl')) statJsonl(path.join(r.dir, e.name, f.name));
-      }
-    } else acc(r.dir, 0);
+    let found;
+    try { found = convos.discoverFiles(r, 0); } catch (_) { continue; }
+    for (const f of found) {
+      files++; bytes += f.size;
+      if (f.mtimeMs > newest) newest = f.mtimeMs;
+    }
   }
   return files + ':' + bytes + ':' + Math.round(newest);
 }
@@ -1297,6 +1312,10 @@ function apiEvents(req, res, u) {
   });
   res.write(': open\n\n');
   eventClients.add(res);
+  // ?panel=1＝側邊欄精簡模式：它自己不能打開檔案（沒有閱讀欄），所以投影／丟疊
+  // 的廣播跳過它，「delivered」只數完整視窗——側邊欄靠這個決定要不要改開新分頁。
+  const isPanel = u.searchParams.get('panel') === '1';
+  if (isPanel) panelSse.add(res);
   const w = watchPath ? dirWatchGet(watchPath) : null;
   if (w) w.subs.add(res);
   convoHub.subs.add(res);
@@ -1314,6 +1333,7 @@ function apiEvents(req, res, u) {
     closed = true;
     clearInterval(ka);
     eventClients.delete(res);
+    panelSse.delete(res);
     if (w) dirWatchRelease(w, res);
     convoHub.subs.delete(res);
     if (!convoHub.subs.size) convoHubStop();
@@ -1374,7 +1394,8 @@ function apiProject(req, res) {
     const source = typeof payload.source === 'string' ? payload.source.slice(0, 40) : null;
     const data = { path: abs, line, source, at: Date.now() };
     let delivered = 0;
-    for (const r of eventClients) { sendSse(r, 'project', data); delivered++; }
+    // 側邊欄（?panel=1 的 SSE 客戶）收不到投影：它沒有閱讀欄，檔案投影要投到完整視窗。
+    for (const r of eventClients) { if (panelSse.has(r)) continue; sendSse(r, 'project', data); delivered++; }
     return sendJson(res, 200, { ok: true, delivered });
   })();
 }
@@ -1471,7 +1492,8 @@ function apiPile(req, res) {
     savePiles();
     const data = { id: pile.id, title, count: pile.paths.length, source, createdAt: pile.createdAt };
     let delivered = 0;
-    for (const r of eventClients) { sendSse(r, 'pile', data); delivered++; }
+    // 同 /api/project：側邊欄精簡模式不接收疊（它沒有左欄可放）
+    for (const r of eventClients) { if (panelSse.has(r)) continue; sendSse(r, 'pile', data); delivered++; }
     return sendJson(res, 200, { ok: true, delivered, id: pile.id, count: pile.paths.length, dropped });
   })();
 }
@@ -1498,6 +1520,395 @@ function apiPileGet(res, u) {
 }
 // ================== end piles ==================
 
+// ==================== browser tabs bridge (Chrome extension → server → UI) ====================
+// The web page cannot see the browser's other tabs, so a small MV3 extension
+// (extension/) pushes the tab list here and long-polls for commands. Everything
+// lives in memory: the list is rebuilt on every push, screenshots are kept per
+// tab id, commands are a small queue. Nothing touches disk.
+//
+// Guards (same idea as /api/project, three layers, all cheap):
+//  1. ext caller = `X-RiffleDesk-Ext: 1` header AND either no Origin or a
+//     chrome-extension:// Origin. A cross-site *web page* cannot forge that
+//     header without a CORS preflight (we answer none), and the /api/
+//     Sec-Fetch-Site rule above refuses its requests anyway.
+//  2. per-install token: the extension generates a random 48-hex token (stored
+//     in chrome.storage.local) and sends it as `X-RiffleDesk-Token` on every
+//     request. The first extension contact after the server starts pairs the
+//     token; every later mismatch is 403 (restart the server to re-pair). This
+//     closes the static-header hole even against another local process that
+//     merely guesses the marker header.
+//  3. UI-originated actions (/api/tabs/action) stay on the normal same-origin
+//     write rules (Sec-Fetch-Site + Origin), and read/activate only address tab
+//     ids from the extension's own latest pushed list. Reading page content is a
+//     deliberate core capability of this feature, reachable ONLY from the local
+//     RiffleDesk UI itself; other extensions / local malware are out of the
+//     browser trust model.
+const TABS_MAX = 500;
+const TABS_TITLE_MAX = 300;
+const TABS_URL_MAX = 2000;
+const TABS_FAV_MAX = 24 * 1024;          // favicon as data: URL
+const TABS_SHOT_MAX = 400 * 1024;        // one jpeg screenshot (base64 chars)
+const TABS_BODY_MAX = 12 * 1024 * 1024;  // whole push (many shots)
+const TABS_RESULT_MAX = 4 * 1024 * 1024; // text (≤200KB) + outerHTML (≤2MB) + slack
+const TABS_TEXT_MAX = 200 * 1024;
+const TABS_PREVIEW_TEXT_MAX = 1500;      // 卡片上給人看的可見文字（沒截圖的卡才有內容可讀）
+const TABS_DESC_MAX = 500;               // meta description 摘要（卡面優先於主內容文字）
+const TABS_HTML_MAX = 2 * 1024 * 1024;
+const TABS_CMDQ_MAX = 50;
+const TABS_READ_TIMEOUT = 12000;
+const TABS_EXT_ALIVE_MS = 90000;
+
+let tabList = [];                 // [{id, windowId, title, url, fav, active, discarded, lastAccessed, text, desc}]
+// id -> {buf, ver}。截圖「跨推送保留」：擴充只拍到各視窗前景那張，若每次推送都把
+// 整張表換掉，切走的分頁馬上沒圖、切回來才又長出來（卡片閃)。ver 讓前端知道
+// 「同一個 tabId 的圖換了」而只重畫那一張。
+let tabShots = new Map();
+let tabShotVer = 1;
+// og:image 代表圖：跟截圖同一套——記憶體 Map、跨推送保留、ver 版號、
+// 擴充端去重（ogSent）只推新圖，server 缺哪張在推送回覆的 needOg 裡要回來
+let tabOg = new Map();
+let tabOgVer = 1;
+let tabsAt = 0;                   // last full-list push
+let tabsNeedsAllShots = false;    // 剛配對完：下一次回覆要求擴充把每一張截圖都重送
+let extSeenAt = 0;                // last contact from the extension (any endpoint)
+let tabsExtId = '';               // 擴充的 runtime id（頁面端直接 sendMessage 要用）
+let tabsToken = null;             // per-install token, paired on first extension contact
+const tabCmdQueue = [];           // commands waiting for the extension
+const tabCmdWaiters = new Set();  // {res, timer} long-poll responses
+const tabReadPend = new Map();    // reqId -> {resolve, timer}
+let tabReqSeq = 1;
+
+function extCallerOk(req) {
+  if (req.headers['x-riffledesk-ext'] !== '1') return false;
+  const o = req.headers.origin;
+  // Firefox 的 extension fetch 會帶 Origin: moz-extension://…（Chrome 的 service
+  // worker 不帶；這裡兩種都收）。一般網頁偽造不了自訂標頭，所以照樣安全。
+  return !o || /^(chrome|moz)-extension:\/\//.test(String(o));
+}
+
+// Layer 2: pair the extension's per-install token on first contact, then
+// require an exact match. `hostAllowed` (127.0.0.1 Host) already ran for every
+// request before this handler.
+function extTokenOk(req) {
+  const tok = String(req.headers['x-riffledesk-token'] || '');
+  if (!/^[0-9a-f]{32,128}$/.test(tok)) return { ok: false, error: 'X-RiffleDesk-Token required' };
+  if (tabsToken === null) { tabsToken = tok; console.log('[tabs] extension token paired'); return { ok: true, paired: true }; }
+  if (tok !== tabsToken) return { ok: false, error: 'extension token mismatch (restart the RiffleDesk server to re-pair)' };
+  return { ok: true };
+}
+
+function clampStr(v, cap) {
+  if (typeof v !== 'string') return '';
+  return v.length > cap ? v.slice(0, cap) : v;
+}
+
+function sanTab(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = Number(raw.id);
+  const windowId = Number(raw.windowId);
+  if (!Number.isFinite(id) || !Number.isFinite(windowId)) return null;
+  let fav = clampStr(raw.fav, TABS_FAV_MAX + 32);
+  if (fav && !/^data:image\//i.test(fav) && !/^https?:\/\//i.test(fav)) fav = '';
+  if (fav.length > TABS_FAV_MAX && !/^data:/i.test(fav)) fav = fav.slice(0, TABS_URL_MAX);
+  return {
+    id: Math.floor(id), windowId: Math.floor(windowId),
+    title: clampStr(raw.title, TABS_TITLE_MAX),
+    url: clampStr(raw.url, TABS_URL_MAX),
+    fav,
+    active: !!raw.active,
+    discarded: !!raw.discarded,
+    lastAccessed: Number.isFinite(Number(raw.lastAccessed)) ? Number(raw.lastAccessed) : 0,
+    text: clampStr(raw.text, TABS_PREVIEW_TEXT_MAX).replace(/\s+/g, ' ').trim(),
+    desc: clampStr(raw.desc, TABS_DESC_MAX).replace(/\s+/g, ' ').trim()
+  };
+}
+
+function sanShot(v) {
+  if (typeof v !== 'string' || v.length > TABS_SHOT_MAX * 1.4) return null;
+  const m = /^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/i.exec(v);
+  if (!m) return null;
+  try {
+    const buf = Buffer.from(m[2], 'base64');
+    return buf.length && buf.length <= TABS_SHOT_MAX ? buf : null;
+  } catch (_) { return null; }
+}
+
+function tabsBroadcast() {
+  const data = { n: tabList.length, at: tabsAt };
+  for (const r of eventClients) { try { sendSse(r, 'tabs', data); } catch (_) {} }
+}
+
+function apiTabsPush(req, res) {
+  return (async () => {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' });
+    const ctype = String(req.headers['content-type'] || '').toLowerCase();
+    if (!ctype.startsWith('application/json')) return sendJson(res, 415, { ok: false, error: 'json only' });
+    const isExt = extCallerOk(req);
+    if (!isExt && !writeOriginOk(req)) {
+      return sendJson(res, 403, { ok: false, error: 'same-origin, or X-RiffleDesk-Ext: 1 with no/extension Origin, required' });
+    }
+    if (isExt) {
+      const tk = extTokenOk(req);
+      if (!tk.ok) return sendJson(res, 403, { ok: false, error: tk.error });
+      extSeenAt = Date.now();
+      // 重新配對（server 重開）＝擴充端的「送過了」記錄全部失效 → 要它整份重送截圖
+      if (tk.paired) tabsNeedsAllShots = true;
+    }
+    let body;
+    try { body = await readBody(req, TABS_BODY_MAX); } catch (_) {
+      return sendJson(res, 413, { ok: false, error: 'body too large' });
+    }
+    let payload;
+    try { payload = JSON.parse(body.toString('utf8')); } catch (_) {
+      return sendJson(res, 400, { ok: false, error: 'bad json' });
+    }
+    // 擴充帶來自己的 runtime id：UI 要用 chrome.runtime.sendMessage(extId,…) 直接把
+    // 點卡送給擴充（趁手勢開側邊欄），需要知道目標 id
+    if (isExt && typeof payload.extId === 'string' && /^[\w@.\-]{3,128}$/.test(payload.extId)) {
+      tabsExtId = payload.extId;
+    }
+    const rawTabs = payload && payload.tabs;
+    if (!Array.isArray(rawTabs)) return sendJson(res, 400, { ok: false, error: 'missing tabs' });
+    if (rawTabs.length > TABS_MAX) return sendJson(res, 400, { ok: false, error: `too many tabs (max ${TABS_MAX})` });
+    const tabs = [];
+    const shots = new Map();
+    const ogs = new Map();
+    const seen = new Set();
+    for (const raw of rawTabs) {
+      const tb = sanTab(raw);
+      if (!tb || seen.has(tb.id)) continue;
+      seen.add(tb.id);
+      tabs.push(tb);
+      const shot = sanShot(raw.shot);
+      // 截圖來源標記：'drawn'＝擴充在背景用 DOM 繪圖畫的暫代圖，'shot'＝真截圖
+      const kind = raw.shotKind === 'drawn' ? 'drawn' : 'shot';
+      // 這次沒帶圖：沿用上一張（同 id 的分頁還在），卡片不會因為切走就變回空白面
+      if (shot) shots.set(tb.id, { buf: shot, ver: ++tabShotVer, kind });
+      else if (tabShots.has(tb.id)) shots.set(tb.id, tabShots.get(tb.id));
+      const og = sanShot(raw.og);   // 代表圖同 sanShot 規格（jpeg ≤400KB）
+      // ogClear：分頁導到「沒有 og:image」的頁面時擴充會明示，把舊圖丟掉，
+      // 否則新網址會一直頂著上一頁的代表圖
+      if (og) ogs.set(tb.id, { buf: og, ver: ++tabOgVer });
+      else if (!raw.ogClear && tabOg.has(tb.id)) ogs.set(tb.id, tabOg.get(tb.id));
+    }
+    tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+    tabList = tabs;
+    tabShots = shots;
+    tabOg = ogs;
+    tabsAt = Date.now();
+    tabsBroadcast();
+    // 擴充只送「新拍的」截圖。哪些還是缺的報回去，擴充據此重送——
+    // server 重開（記憶體清空）或 token 重新配對後，卡片才不會永遠空白。
+    const needShot = tabsNeedsAllShots ? tabs.map(tb => tb.id)
+      : tabs.filter(tb => !shots.has(tb.id)).map(tb => tb.id);
+    const needOg = tabsNeedsAllShots ? tabs.map(tb => tb.id)
+      : tabs.filter(tb => !ogs.has(tb.id)).map(tb => tb.id);
+    tabsNeedsAllShots = false;
+    return sendJson(res, 200, { ok: true, n: tabs.length, needShot, needOg });
+  })();
+}
+
+function apiTabsList(res, u) {
+  // ?meta=1＝輕量狀態包（完整版工具列的側欄鈕每 30 秒問一次，不能整份分頁清單來回搬）
+  if (u && u.searchParams.get('meta') === '1') {
+    return sendJson(res, 200, {
+      ok: true, at: tabsAt, extId: tabsExtId,
+      extAlive: extSeenAt > 0 && (Date.now() - extSeenAt) < TABS_EXT_ALIVE_MS,
+      n: tabList.length
+    });
+  }
+  return sendJson(res, 200, {
+    ok: true,
+    at: tabsAt,
+    ext: extSeenAt,
+    extId: tabsExtId,
+    extAlive: extSeenAt > 0 && (Date.now() - extSeenAt) < TABS_EXT_ALIVE_MS,
+    tabs: tabList.map(tb => ({
+      ...tb,
+      hasShot: tabShots.has(tb.id), shotVer: tabShots.has(tb.id) ? tabShots.get(tb.id).ver : 0,
+      shotKind: tabShots.has(tb.id) ? (tabShots.get(tb.id).kind || 'shot') : null,
+      hasOg: tabOg.has(tb.id), ogVer: tabOg.has(tb.id) ? tabOg.get(tb.id).ver : 0
+    }))
+  });
+}
+
+function apiTabsShot(res, u) {
+  const id = Math.floor(Number(u.searchParams.get('id')));
+  const e = Number.isFinite(id) ? tabShots.get(id) : null;
+  const buf = e && e.buf;
+  if (!buf) return sendJson(res, 404, { ok: false, error: 'no shot' });
+  // ?v= 版號不同就是新圖：可快取，切來切去不用重抓
+  res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, max-age=600' });
+  return res.end(buf);
+}
+
+// og:image 代表圖：同 /api/tabs/shot，只是圖床是 tabOg（擴充端已縮成 ≤800px JPEG）
+function apiTabsOg(res, u) {
+  const id = Math.floor(Number(u.searchParams.get('id')));
+  const e = Number.isFinite(id) ? tabOg.get(id) : null;
+  const buf = e && e.buf;
+  if (!buf) return sendJson(res, 404, { ok: false, error: 'no og image' });
+  res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, max-age=600' });
+  return res.end(buf);
+}
+
+function tabCmdEnqueue(cmd) {
+  cmd.at = Date.now();
+  tabCmdQueue.push(cmd);
+  if (tabCmdQueue.length > TABS_CMDQ_MAX) tabCmdQueue.shift();
+  for (const w of [...tabCmdWaiters]) {
+    clearTimeout(w.timer);
+    tabCmdWaiters.delete(w);
+    const next = tabCmdQueue.shift();
+    sendJson(w.res, 200, { ok: true, cmd: next || null });
+  }
+}
+
+// UI asks the extension to do something with a tab. 'read' waits for the
+// content round-trip; 'activate'/'open' are fire-and-forget.
+function apiTabsAction(req, res) {
+  return (async () => {
+    const payload = await readWritePayload(req, res, 16 * 1024);
+    if (!payload) return; // error already sent
+    const op = payload.op;
+    if (op !== 'read' && op !== 'activate' && op !== 'open' && op !== 'close' && op !== 'restore') {
+      return sendJson(res, 400, { ok: false, error: 'bad op' });
+    }
+    const extAlive = extSeenAt > 0 && (Date.now() - extSeenAt) < TABS_EXT_ALIVE_MS;
+    if (!extAlive) return sendJson(res, 503, { ok: false, error: 'extension not connected' });
+    if (op === 'open') {
+      const url = clampStr(payload.url, TABS_URL_MAX);
+      if (!/^https?:\/\//i.test(url)) return sendJson(res, 400, { ok: false, error: 'http(s) url only' });
+      tabCmdEnqueue({ reqId: tabReqSeq++, op, url });
+      return sendJson(res, 200, { ok: true });
+    }
+    if (op === 'restore') {
+      // 卡片 × 的「復原」：擴充 chrome.sessions.restore()。不帶 tabId（還原出來的是新 id）。
+      tabCmdEnqueue({ reqId: tabReqSeq++, op });
+      return sendJson(res, 200, { ok: true });
+    }
+    const tabId = Math.floor(Number(payload.tabId));
+    if (!Number.isFinite(tabId)) return sendJson(res, 400, { ok: false, error: 'missing tabId' });
+    if (op === 'close') {
+      // 關掉的瞬間擴充下一次推送就會少這個 id；若剛好已關，404 也一樣算關成
+      if (tabList.find(x => x.id === tabId)) {
+        tabCmdEnqueue({ reqId: tabReqSeq++, op, tabId });
+        return sendJson(res, 200, { ok: true });
+      }
+      return sendJson(res, 404, { ok: false, error: 'no such tab' });
+    }
+    const tb = tabList.find(x => x.id === tabId);
+    if (!tb) return sendJson(res, 404, { ok: false, error: 'no such tab' });
+    if (op === 'activate') {
+      tabCmdEnqueue({ reqId: tabReqSeq++, op, tabId, windowId: tb.windowId });
+      return sendJson(res, 200, { ok: true });
+    }
+    // read: queue + wait for the extension's /api/tabs/result
+    const reqId = tabReqSeq++;
+    const done = new Promise(resolve => {
+      const timer = setTimeout(() => {
+        tabReadPend.delete(reqId);
+        resolve({ status: 504, body: { ok: false, error: 'extension timeout' } });
+      }, TABS_READ_TIMEOUT);
+      timer.unref();
+      tabReadPend.set(reqId, { resolve, timer });
+    });
+    tabCmdEnqueue({ reqId, op, tabId });
+    const r = await done;
+    return sendJson(res, r.status, r.body);
+  })();
+}
+
+// POST /api/tabs/focus {tabId} — 側欄「回到完整畫面」：叫所有非側欄客戶端（完整視窗）
+// 捲到這張卡。來源兩種都收：頁面自己送（同源寫入規則）、擴充代送（擴充標頭＋配對 token）。
+function apiTabsFocus(req, res) {
+  return (async () => {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' });
+    const ctype = String(req.headers['content-type'] || '').toLowerCase();
+    if (!ctype.startsWith('application/json')) return sendJson(res, 415, { ok: false, error: 'json only' });
+    if (!writeOriginOk(req)) {
+      if (!extCallerOk(req)) return sendJson(res, 403, { ok: false, error: 'bad origin' });
+      const tk = extTokenOk(req);
+      if (!tk.ok) return sendJson(res, 403, { ok: false, error: tk.error });
+    }
+    let body;
+    try { body = await readBody(req, 4 * 1024); } catch (_) { return sendJson(res, 413, { ok: false, error: 'body too large' }); }
+    let payload;
+    try { payload = JSON.parse(body.toString('utf8')); } catch (_) { return sendJson(res, 400, { ok: false, error: 'bad json' }); }
+    const tabId = Math.floor(Number(payload && payload.tabId));
+    if (!Number.isFinite(tabId) || tabId <= 0) return sendJson(res, 400, { ok: false, error: 'bad tabId' });
+    let delivered = 0;
+    for (const r of eventClients) { if (panelSse.has(r)) continue; sendSse(r, 'tabfocus', { tabId }); delivered++; }
+    return sendJson(res, 200, { ok: true, delivered });
+  })();
+}
+
+// Extension long-poll: GET /api/tabs/cmd?wait=15000 → {cmd} or {cmd:null}
+function apiTabsCmd(req, res, u) {
+  if (!extCallerOk(req)) return sendJson(res, 403, { ok: false, error: 'X-RiffleDesk-Ext: 1 required' });
+  const tk = extTokenOk(req);
+  if (!tk.ok) return sendJson(res, 403, { ok: false, error: tk.error });
+  extSeenAt = Date.now();
+  if (tabCmdQueue.length) return sendJson(res, 200, { ok: true, cmd: tabCmdQueue.shift() });
+  const wait = Math.max(0, Math.min(25000, Math.floor(Number(u.searchParams.get('wait')) || 0)));
+  if (!wait) return sendJson(res, 200, { ok: true, cmd: null });
+  const w = { res, timer: null };
+  w.timer = setTimeout(() => {
+    tabCmdWaiters.delete(w);
+    sendJson(res, 200, { ok: true, cmd: null });
+  }, wait);
+  w.timer.unref();
+  tabCmdWaiters.add(w);
+  req.on('close', () => {
+    if (!tabCmdWaiters.has(w)) return;
+    tabCmdWaiters.delete(w);
+    clearTimeout(w.timer);
+  });
+}
+
+// Extension posts the result of a 'read' (or an ack for the fire-and-forget ops).
+function apiTabsResult(req, res) {
+  return (async () => {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' });
+    const ctype = String(req.headers['content-type'] || '').toLowerCase();
+    if (!ctype.startsWith('application/json')) return sendJson(res, 415, { ok: false, error: 'json only' });
+    if (!extCallerOk(req)) return sendJson(res, 403, { ok: false, error: 'X-RiffleDesk-Ext: 1 required' });
+    const tk = extTokenOk(req);
+    if (!tk.ok) return sendJson(res, 403, { ok: false, error: tk.error });
+    extSeenAt = Date.now();
+    let body;
+    try { body = await readBody(req, TABS_RESULT_MAX); } catch (_) {
+      return sendJson(res, 413, { ok: false, error: 'body too large' });
+    }
+    let payload;
+    try { payload = JSON.parse(body.toString('utf8')); } catch (_) {
+      return sendJson(res, 400, { ok: false, error: 'bad json' });
+    }
+    const reqId = Math.floor(Number(payload && payload.reqId));
+    const pend = tabReadPend.get(reqId);
+    if (!pend) return sendJson(res, 200, { ok: true, dropped: true }); // timed out already / non-read op
+    tabReadPend.delete(reqId);
+    clearTimeout(pend.timer);
+    if (!payload.ok) {
+      pend.resolve({ status: 502, body: { ok: false, error: clampStr(payload.error, 300) || 'extension failed' } });
+    } else {
+      const text = clampStr(payload.text, TABS_TEXT_MAX);
+      let html = clampStr(payload.html, TABS_HTML_MAX + 64);
+      const htmlTruncated = !!payload.htmlTruncated || (typeof payload.html === 'string' && payload.html.length > TABS_HTML_MAX);
+      if (htmlTruncated) html = html.slice(0, TABS_HTML_MAX);
+      pend.resolve({ status: 200, body: {
+        ok: true, reqId,
+        title: clampStr(payload.title, TABS_TITLE_MAX),
+        url: clampStr(payload.url, TABS_URL_MAX),
+        text, textTruncated: !!payload.textTruncated,
+        html, htmlTruncated
+      } });
+    }
+    return sendJson(res, 200, { ok: true });
+  })();
+}
+// ================== end browser tabs bridge ==================
+
 // ---------- request handler ----------
 async function requestHandler(req, res) {
   try {
@@ -1523,8 +1934,26 @@ async function requestHandler(req, res) {
     // anything at all under /raw/.
     // never allow this origin's resources to be embedded cross-origin
     res.setHeader('cross-origin-resource-policy', 'same-origin');
-
     const u = new URL(req.url, `http://${HOST}:${req.socket.localPort}`);
+    // ?mode=panel 的主文件放寬框入限制：自動收合側欄（右緣抽屜）的面板殼掛在任意
+    // 網頁裡（網頁 → chrome-extension 殼 → 這一頁），frame-ancestors 比對整條祖先鏈，
+    // 不放的話抽屜在任何一般網頁上都載不出來。完整介面（沒有 mode=panel）維持只准
+    // 自家與擴充框住；/api/ 上另有 Sec-Fetch-Site 把關，frame 內按鈕的寫入操作仍是
+    // 同源 fetch，防線不變。
+    // 只有帶對擴充配對 token（dk=）的抽屜面板才放寬：隨便哪個網站自己框
+    // ?mode=panel 拿不到 token，照樣被擋（防點擊劫持關掉真分頁）。
+    const dk = u.searchParams.get('dk');
+    const isPanelDoc = (u.pathname === '/' || u.pathname === '/index.html') &&
+      u.searchParams.get('mode') === 'panel' && !!tabsToken && typeof dk === 'string' && dk === tabsToken;
+    // Framing lock: the UI may sit inside the browser extension's side panel
+    // (a chrome-extension:// / moz-extension:// iframe, ?mode=panel). Any other
+    // website trying to frame the full UI — say, to clickjack the file open/read
+    // UI — is refused. frame-ancestors 'self' 的放行對自家頁面（分頁預覽之外）照樣有效。
+    res.setHeader('content-security-policy',
+      isPanelDoc
+        ? "frame-ancestors 'self' chrome-extension://* moz-extension://* http: https:"
+        : "frame-ancestors 'self' chrome-extension://* moz-extension://*");
+
     // demo mode: callers speak the fake home; the handlers work on real paths
     if (DEMO_DIR) {
       const qp = u.searchParams.get('path');
@@ -1643,9 +2072,22 @@ async function requestHandler(req, res) {
     }
     if (p === '/api/piles') return apiPileList(res);
 
+    // browser tabs bridge (extension → server → UI); implementation above
+    if (p === '/api/tabs') {
+      if (req.method === 'POST') return apiTabsPush(req, res);
+      return apiTabsList(res, u);
+    }
+    if (p === '/api/tabs/shot') return apiTabsShot(res, u);
+    if (p === '/api/tabs/og') return apiTabsOg(res, u);
+    if (p === '/api/tabs/action') return apiTabsAction(req, res);
+    if (p === '/api/tabs/focus') return apiTabsFocus(req, res);
+    if (p === '/api/tabs/cmd') return apiTabsCmd(req, res, u);
+    if (p === '/api/tabs/result') return apiTabsResult(req, res);
+
     if (p === '/api/convos') return apiConvos(res, u);
     if (p === '/api/convo') return apiConvo(res, u);
     if (p === '/api/recent') return apiRecent(res, u);
+    if (p === '/api/recentmod') return apiRecentMod(res, u);
     if (p === '/api/whichconvo') return apiWhichConvo(res, u);
 
     if (p === '/api/pin' && req.method === 'POST') {

@@ -1,0 +1,11 @@
+[
+  { "role": "user", "content": [{ "type": "text", "text": "幫我補一個 README" }], "ts": @@TS60@@ },
+  { "role": "assistant", "content": [
+      { "type": "tool_use", "name": "write_to_file", "input": { "path": "@@CLINE_A@@", "content": "# hi\n" } }
+    ], "ts": @@TS55@@ },
+  { "role": "user", "content": [{ "type": "tool_result", "content": "done" }], "ts": @@TS54@@ },
+  { "role": "assistant", "content": [
+      { "type": "tool_use", "name": "replace_in_file", "input": { "path": "@@CLINE_B@@", "diff": "..." } },
+      { "type": "tool_use", "name": "read_file", "input": { "path": "@@CLINE_READ@@" } }
+    ], "ts": @@TS52@@ }
+]

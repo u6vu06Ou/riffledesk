@@ -1,11 +1,58 @@
 // reader panel: DOM content renderers for all supported kinds.
 import { fmtSize, fmtDate, api, apiJson, KIND_LABEL, kindOf, kindColor, theme } from './util.js';
 import { t } from './i18n.js';
+import { getMaxTokens, setMaxTokens } from './copyai.js';
+import { copyTabForAI } from './tabcopy.js';
 import { renderCodeView, setCodeControlsVisible, extToLang, codeThemeNow } from './codetheme.js';
 import { htmlVisibleText } from './mirror.js';
 import { EditorSession } from './editor.js';
 import { FindBar } from './find.js';
 import { Revise } from './revise.js';
+import { pathExtOf } from './fileurl.js';
+
+// ---- 設定面板：「複製給 AI」長度上限 ----
+// 用模組層自己掛（main.js 不碰），reader.js 一被載入就生效。
+const COPY_AI_PRESETS = [2000, 4000, 8000, 16000, 32000];
+const COPY_AI_CUSTOM = 'custom';
+
+function initCopyAiSetting() {
+  const sel = document.getElementById('copyAiMax');
+  const num = document.getElementById('copyAiNum');
+  if (!sel) return;
+  const cur = getMaxTokens();
+  const opts = COPY_AI_PRESETS.map(n => [String(n), String(n)]);
+  opts.push([COPY_AI_CUSTOM, t('copyAiCustom')]);
+  const uniq = new Map(opts);
+  sel.replaceChildren();
+  for (const [v, label] of uniq) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = label;
+    sel.appendChild(o);
+  }
+  const syncNum = () => {
+    const custom = sel.value === COPY_AI_CUSTOM;
+    num.hidden = !custom;
+    num.value = custom ? String(cur) : sel.value;
+    if (custom) num.focus();
+  };
+  if (COPY_AI_PRESETS.includes(cur)) sel.value = String(cur);
+  else { sel.value = COPY_AI_CUSTOM; num.value = String(cur); num.hidden = false; }
+  sel.addEventListener('change', () => {
+    if (sel.value === COPY_AI_CUSTOM) { syncNum(); return; }
+    num.hidden = true;
+    setMaxTokens(sel.value);
+  });
+  num.addEventListener('change', () => {
+    const v = setMaxTokens(num.value);
+    num.value = String(v);
+  });
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initCopyAiSetting, { once: true });
+  else initCopyAiSetting();
+}
+
 
 // 可以直接編輯的檔案類型（伺服器 /api/save 只收這些；md 另有 編輯/預覽 切換）
 const EDIT_KINDS = new Set(['markdown', 'text', 'html', 'json', 'table', 'code']);
@@ -13,6 +60,7 @@ const EDIT_KINDS = new Set(['markdown', 'text', 'html', 'json', 'table', 'code']
 export class Reader {
   constructor() {
     this.el = document.getElementById('reader');
+    this.header = document.getElementById('readerHeader');
     this.kind = document.getElementById('readerKind');
     this.title = document.getElementById('readerTitle');
     this.meta = document.getElementById('readerMeta');
@@ -34,6 +82,9 @@ export class Reader {
     this.body = document.getElementById('readerBody');
     this.rawText = null;            // 這個檔的原始文字（編輯器進去時用；JSON 是原始檔不是 pretty 版）
     this.toast = () => {};
+    // 右欄網頁預覽的「側欄模式」鈕用的回呼（main.js 接 tabsMode.enterSidePanel）；
+    // 留在 null＝沒接線，按下去只會在狀態列講一聲
+    this.enterSidePanel = null;
     this.undoAction = null;
     this.leaveCb = null;            // 未存擋下時，按「存檔並離開」後要跑的事
     this.mdPreview = true;          // md 編輯中：true＝預覽、false＝編輯
@@ -333,6 +384,332 @@ export class Reader {
     if (m) m.remove();
   }
 
+  // ---- 瀏覽器分頁卡（tabs.js 的偽檔案）----
+  // 右欄＝截圖（若有）＋可讀文字，可切換成 DOM 原始碼（hljs 上色、純文字，絕不執行），
+  // 外加「切到這個分頁」／「在新分頁開啟」。內容由擴充抓回（/api/tabs/action 的 read）。
+  async openTabBody(file, stale) {
+    const tab = file.tab;
+    // 安裝說明卡（擴充還沒連上時的那一張）：右欄直接顯示安裝步驟，不抓內容
+    if (tab.note) {
+      this.title.title = '';
+      this.meta.textContent = '';
+      this.meta.replaceChildren();
+      const body = this.body;
+      const p = document.createElement('p');
+      p.className = 'tabstat';
+      p.textContent = t('tabsNoExtBody');
+      const pre = document.createElement('pre');
+      pre.className = 'tabtext';
+      pre.textContent = t('tabsNoExtSteps');
+      body.append(p, pre);
+      return;
+    }
+    this.title.title = tab.url || '';
+    const body = this.body;
+
+    // file:// 分頁：擴充故意不讀本機檔，右欄改走 server 的 /api/file（跟檔案模式同一套渲染）。
+    if (file.localPath) return this.openLocalTabBody(file, stale);
+    // 瀏覽器內建頁／休眠分頁：擴充讀不到也拍不到，顯示說明而不是空白。
+    if (file.builtin || (tab.discarded && !tab.hasShot && !tab.text)) {
+      return this.openTabExplainBody(file, file.builtin);
+    }
+
+    // 標題列第 2 列：網域 ＋ 網址（單行省略、滑過看全文、點了複製）。網址很長也不會撐破右欄。
+    let dom = '';
+    try { dom = new URL(tab.url).hostname || ''; } catch (_) { dom = ''; }
+    this.meta.replaceChildren();
+    if (dom) {
+      const sp = document.createElement('span');
+      sp.className = 'tabdomain';
+      sp.textContent = dom;
+      this.meta.appendChild(sp);
+    }
+    if (tab.url) {
+      const a = document.createElement('span');
+      a.className = 'taburl';
+      a.textContent = tab.url;
+      a.title = tab.url;
+      a.setAttribute('role', 'link');
+      a.tabIndex = 0;
+      const copy = () => {
+        navigator.clipboard.writeText(tab.url)
+          .then(() => this.toast(t('copied', { v: tab.url.length > 60 ? '…' + tab.url.slice(-58) : tab.url })))
+          .catch(() => this.toast(t('opFail', { msg: 'clipboard' })));
+      };
+      a.addEventListener('click', copy);
+      a.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copy(); } });
+      this.meta.appendChild(a);
+    }
+
+    const mkBtn = (cls, label, tip) => {
+      const b = document.createElement('button');
+      b.className = cls; b.textContent = label; if (tip) b.title = tip;
+      return b;
+    };
+    const bar = document.createElement('div'); bar.className = 'tabview-bar';
+    const segGrp = document.createElement('div'); segGrp.className = 'tabview-seg';
+    const actGrp = document.createElement('div'); actGrp.className = 'tabview-act';
+    const segText = mkBtn('tabseg on', t('tabsTextView'), t('tabsTextViewTitle'));
+    const segDom = mkBtn('tabseg', t('tabsDomView'), t('tabsDomViewTitle'));
+    const btnAct = mkBtn('tabact', t('tabsActivate'), t('tabsActivateTitle'));
+    const btnOpen = mkBtn('tabact', t('tabsOpenNew'), t('tabsOpenNewTitle'));
+    const btnAI = mkBtn('tabact copyai', t('copyAiBtn'), t('copyAiBtnTitle'));
+    // 安裝說明卡在上面就早早 return 了，這個列根本不會出現——這裡再擋一次，
+    // 免得日後把說明卡併回一般路徑時多出一顆永遠開不了側欄的鈕（跟工具列同一個判斷）。
+    const btnPanel = mkBtn('tabact sidepanel', t('tabsSidePanel'), t('tabsSidePanelTitle'));
+    btnPanel.disabled = !!tab.note;
+    segGrp.append(segText, segDom);
+    actGrp.append(btnAct, btnOpen, btnAI, btnPanel);
+    bar.append(segGrp, actGrp);
+    body.appendChild(bar);
+    if (tab.hasShot) {
+      const img = document.createElement('img');
+      img.className = 'tabshot';
+      img.alt = tab.title || '';
+      img.src = '/api/tabs/shot?id=' + encodeURIComponent(tab.id) + '&t=' + (file.mtime || 0);
+      body.appendChild(img);
+    }
+    const stat = document.createElement('div'); stat.className = 'tabstat';
+    body.appendChild(stat);
+    const viewBox = document.createElement('div'); viewBox.className = 'tabview-box';
+    body.appendChild(viewBox);
+
+    let content = null;   // {text, textTruncated, html, htmlTruncated}
+    let mode = 'text';
+    const renderMode = () => {
+      segText.classList.toggle('on', mode === 'text');
+      segDom.classList.toggle('on', mode === 'dom');
+      segText.disabled = !content || !content.text;
+      segDom.disabled = !content || !content.html;
+      viewBox.innerHTML = '';
+      if (!content) return;
+      if (mode === 'text') {
+        setCodeControlsVisible(false);
+        const pre = document.createElement('pre');
+        pre.className = 'tabtext';
+        pre.textContent = (content.text || '') + (content.textTruncated ? '\n…' : '');
+        viewBox.appendChild(pre);
+      } else {
+        setCodeControlsVisible(true);   // 上色檢視:換行鈕／配色選單沿用程式碼檢視那套
+        renderCodeView(viewBox, content.html, { lang: 'xml', bytes: content.html.length });
+        if (content.htmlTruncated) {
+          const note = document.createElement('div');
+          note.className = 'tabstat';
+          note.textContent = t('tabsDomTrunc');
+          viewBox.appendChild(note);
+        }
+      }
+    };
+    segText.addEventListener('click', () => { mode = 'text'; renderMode(); });
+    segDom.addEventListener('click', () => { mode = 'dom'; renderMode(); });
+
+    const postAct = async payload => {
+      const r = await fetch('/api/tabs/action', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) throw new Error(d.error || ('http ' + r.status));
+      return d;
+    };
+    btnAct.addEventListener('click', async () => {
+      btnAct.disabled = true;
+      try { await postAct({ op: 'activate', tabId: tab.id }); }
+      catch (e) { stat.textContent = t('tabsReadFail', { msg: e.message }); }
+      btnAct.disabled = false;
+    });
+    btnOpen.addEventListener('click', async () => {
+      btnOpen.disabled = true;
+      try { await postAct({ op: 'open', url: tab.url }); }
+      catch (e) { stat.textContent = t('tabsReadFail', { msg: e.message }); }
+      btnOpen.disabled = false;
+    });
+    // 「複製給 AI」：流程共用（tabcopy.js，側邊欄卡面 ⧉ 同一條）——向擴充要一次即時內容，
+    // 要不到就退回畫面上已快取的那份。「沒有內容」在預覽的狀態列顯示，不跳 toast。
+    btnAI.addEventListener('click', async () => {
+      btnAI.disabled = true;
+      await copyTabForAI(tab, {
+        cached: content,
+        toast: m => this.toast(m),
+        onNoText: m => { stat.textContent = m; }
+      }).catch(() => {});
+      btnAI.disabled = false;
+    });
+    // 「側欄模式」：同一個點擊手勢裡直送擴充開側邊欄＋把 Chrome 切到這個網頁
+    // （await 過後再送手勢就過期，sidePanel.open 會被擋——所以不做任何前置 await）。
+    // 擴充不在／開不起來：提示字串寫在狀態列，絕不拋錯。
+    btnPanel.addEventListener('click', () => {
+      btnPanel.disabled = true;
+      const p = (typeof this.enterSidePanel === 'function')
+        ? this.enterSidePanel(tab)
+        : Promise.resolve(null).then(() => { stat.textContent = t('tabsSideNoExt'); });
+      Promise.resolve(p).catch(() => {}).finally(() => { btnPanel.disabled = false; });
+    });
+
+    stat.textContent = t('tabsReading');
+    try {
+      const d = await postAct({ op: 'read', tabId: tab.id });
+      if (stale()) return;
+      content = d;
+      stat.textContent = '';
+      if (!d.text && !d.html) {
+        stat.textContent = t('tabsNoText');
+      } else {
+        if (!d.text && d.html) mode = 'dom';
+        renderMode();
+      }
+    } catch (e) {
+      if (stale()) return;
+      stat.textContent = t('tabsReadFail', { msg: e.message });
+      renderMode();   // 兩顆切換鈕都 disable
+    }
+  }
+
+  // 說明區塊（內建頁／休眠分頁）：卡面跟右欄講同一句話，外加「切到這個分頁」——
+  // 說明文字叫使用者點過去，這裡就得有一顆真的按得下去的鈕（休眠那個尤其，切過去才會補圖）。
+  openTabExplainBody(file, builtin) {
+    const tab = file.tab;
+    const body = this.body;
+    const box = document.createElement('div');
+    box.className = 'tabexplain';
+    const ic = document.createElement('div'); ic.className = 'tp-hint-icon';
+    ic.textContent = builtin ? '🧩' : '💤';
+    const h = document.createElement('div'); h.className = 'tp-hint-h';
+    h.textContent = builtin ? t('tabsBuiltinTitle') : t('tabsSleepTitle');
+    const p = document.createElement('div'); p.className = 'tp-hint-p';
+    p.textContent = builtin ? t('tabsBuiltinBody') : t('tabsSleepBody');
+    body.appendChild(box);
+    box.append(ic, h, p);
+    const bar = document.createElement('div'); bar.className = 'tabview-bar';
+    const actGrp = document.createElement('div'); actGrp.className = 'tabview-act';
+    const btnAct = document.createElement('button');
+    btnAct.className = 'tabact'; btnAct.textContent = t('tabsActivate'); btnAct.title = t('tabsActivateTitle');
+    const btnOpen = document.createElement('button');
+    btnOpen.className = 'tabact'; btnOpen.textContent = t('tabsOpenNew'); btnOpen.title = t('tabsOpenNewTitle');
+    actGrp.append(btnAct, btnOpen);
+    bar.append(actGrp);
+    const stat = document.createElement('div'); stat.className = 'tabstat';
+    body.append(bar, stat);
+    const postAct = async payload => {
+      const r = await fetch('/api/tabs/action', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) throw new Error(d.error || ('http ' + r.status));
+      return d;
+    };
+    btnAct.addEventListener('click', async () => {
+      btnAct.disabled = true;
+      try { await postAct({ op: 'activate', tabId: tab.id }); }
+      catch (e) { stat.textContent = t('tabsReadFail', { msg: e.message }); }
+      btnAct.disabled = false;
+    });
+    btnOpen.addEventListener('click', async () => {
+      btnOpen.disabled = true;
+      try { await postAct({ op: 'open', url: tab.url }); }
+      catch (e) { stat.textContent = t('tabsReadFail', { msg: e.message }); }
+      btnOpen.disabled = false;
+    });
+  }
+
+  // file:// 分頁的右欄：同一個分頁工具列（切過去／新分頁開），內容改由 /api/file 直接讀
+  // 本機檔（路徑已由 fileurl.js 從網址解出，server 端仍有 isAllowed 把關）。
+  // 讀不到就退回說明卡面，不會留一片空白。
+  async openLocalTabBody(file, stale) {
+    const tab = file.tab;
+    const body = this.body;
+    body.innerHTML = '';
+    const mkBtn = (cls, label, tip) => {
+      const b = document.createElement('button');
+      b.className = cls; b.textContent = label; if (tip) b.title = tip;
+      return b;
+    };
+    // 只有文字類才給「原始碼」——圖片／PDF／試算表當字串印出來只會是亂碼，
+    // 而且會把整個二進位檔再下載一次。
+    const TEXTLIKE = new Set(['markdown', 'text', 'html', 'json', 'table', 'code']);
+    const canSource = TEXTLIKE.has(file.localKind);
+    const bar = document.createElement('div'); bar.className = 'tabview-bar';
+    const segGrp = document.createElement('div'); segGrp.className = 'tabview-seg';
+    const actGrp = document.createElement('div'); actGrp.className = 'tabview-act';
+    const segText = mkBtn('tabseg on', t('tabsTextView'), t('tabsTextViewTitle'));
+    const segSrc = mkBtn('tabseg', t('tabsSourceView'), t('tabsSourceViewTitle'));
+    const btnAct = mkBtn('tabact', t('tabsActivate'), t('tabsActivateTitle'));
+    const btnOpen = mkBtn('tabact', t('tabsOpenNew'), t('tabsOpenNewTitle'));
+    if (canSource) segGrp.append(segText, segSrc); else segGrp.append(segText);
+    actGrp.append(btnAct, btnOpen);
+    bar.append(segGrp, actGrp);
+    body.appendChild(bar);
+    if (tab.hasShot) {
+      const img = document.createElement('img');
+      img.className = 'tabshot';
+      img.alt = tab.title || '';
+      img.src = '/api/tabs/shot?id=' + encodeURIComponent(tab.id) + '&t=' + (file.mtime || 0);
+      body.appendChild(img);
+    }
+    const stat = document.createElement('div'); stat.className = 'tabstat';
+    const srcBox = document.createElement('pre'); srcBox.className = 'tabtext';
+    srcBox.hidden = true;
+    // 內容盒子先掛上去：後面的 await 都在它裡面畫，不必再改寫共用的 this.body
+    const box = document.createElement('div');
+    box.className = 'tabfile-body';
+    body.appendChild(stat);
+    body.appendChild(box);
+
+    let mode = 'text';
+    const renderMode = () => {
+      segText.classList.toggle('on', mode === 'text');
+      segSrc.classList.toggle('on', mode === 'source');
+      srcBox.hidden = mode !== 'source';
+      box.hidden = mode === 'source';
+      if (mode === 'source') body.insertBefore(srcBox, box); else srcBox.remove();
+    };
+    segText.addEventListener('click', () => { mode = 'text'; renderMode(); });
+    // 原始碼是第一次點才抓（重複下載大檔沒意義），抓的同時把鈕停用避免連點
+    segSrc.addEventListener('click', async () => {
+      if (mode !== 'source') { mode = 'source'; renderMode(); }
+      if (segSrc.dataset.loaded) return;
+      segSrc.disabled = true;
+      const asFile0 = localAsFile(file);
+      try {
+        const r = await fetch(asFile0.urlPath);
+        if (!r.ok) throw new Error('http ' + r.status);
+        srcBox.textContent = await r.text();
+        segSrc.dataset.loaded = '1';
+      } catch (e) {
+        srcBox.textContent = t('tabsReadFail', { msg: e.message });
+        segSrc.disabled = true;
+        return;
+      }
+      segSrc.disabled = false;
+    });
+
+    const postAct = async payload => {
+      const r = await fetch('/api/tabs/action', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) throw new Error(d.error || ('http ' + r.status));
+      return d;
+    };
+    btnAct.addEventListener('click', async () => {
+      btnAct.disabled = true;
+      try { await postAct({ op: 'activate', tabId: tab.id }); }
+      catch (e) { stat.textContent = t('tabsReadFail', { msg: e.message }); }
+      btnAct.disabled = false;
+    });
+    btnOpen.addEventListener('click', async () => {
+      btnOpen.disabled = true;
+      try { await postAct({ op: 'open', url: tab.url }); }
+      catch (e) { stat.textContent = t('tabsReadFail', { msg: e.message }); }
+      btnOpen.disabled = false;
+    });
+
+    // 本機檔的渲染：借用檔案模式那一套，餵它一個「長得像檔案」的物件，畫進 box
+    stat.textContent = t('tabsReading');
+    await this.renderFileBody(localAsFile(file), stale, box);
+    if (stale()) return;
+    stat.textContent = '';
+  }
+
   // warning strip for files flagged `secret: true` — values arrive MASKED from
   // the server (at most 4 leading chars visible); the raw key never crosses the wire
   async showSecretWarning(file) {
@@ -372,6 +749,7 @@ export class Reader {
     this.title.textContent = file.name;
     this.title.title = file.path;
     this.meta.textContent = `${fmtSize(file.size)} · ${fmtDate(file.mtime)}`;
+    this.header.classList.toggle('tabhead', file.kind === 'tab');
     this.body.className = '';
     this.body.textContent = '';
     setCodeControlsVisible(false);   // 預設藏起來；setCode() 打開程式碼檢視時才亮出
@@ -381,21 +759,32 @@ export class Reader {
     this.showScriptHint(false);
     this.syncHtmlButtons(file);
     this.syncEditButtons();
+    if (file.kind === 'tab' && file.tab) return this.openTabBody(file, stale);
     if (file.secret) this.showSecretWarning(file);
+    return this.renderFileBody(file, stale);
+  }
+
+  // 檔案主體（一般檔案模式，以及 file:// 分頁的右欄預覽共用）。
+  // file.urlPath 可覆寫抓取網址（file:// 分頁的 path 是 tab://…，真檔在 localPath）。
+  // into：畫到哪個元素（預設 this.body）。分頁預覽傳自己的盒子進來，
+  // 就不必在 await 期間改寫共用的 this.body（會跟並發的開檔互踩）。
+  async renderFileBody(file, stale, into) {
+    const el = into || this.body;
+    const hl = this.highlight;
+    const url = file.urlPath || ('/api/file?path=' + encodeURIComponent(file.path));
     if (!file.kind) {
-      this.body.innerHTML =
+      el.innerHTML =
         `<p class="msg-dim">${t('noPreviewType')}</p>` +
         `<pre></pre>`;
-      this.body.querySelector('pre').textContent =
+      el.querySelector('pre').textContent =
         t('fileMeta', { path: file.path, size: fmtSize(file.size), date: fmtDate(file.mtime) });
       return;
     }
-    const url = '/api/file?path=' + encodeURIComponent(file.path);
     try {
       if (file.kind === 'image') {
-        this.body.innerHTML = `<img class="reader-img" src="${url}" alt="">`;
+        el.innerHTML = `<img class="reader-img" src="${url}" alt="">`;
       } else if (file.kind === 'pdf') {
-        this.body.innerHTML = `<iframe src="${url}" title="pdf"></iframe>`;
+        el.innerHTML = `<iframe src="${url}" title="pdf"></iframe>`;
       } else if (file.kind === 'html') {
         const runOn = this.htmlRunOn(file);
         const srcOn = this.srcPref.get(pathKey(file.path)) === true;
@@ -403,7 +792,7 @@ export class Reader {
           // ＜/＞ 原始碼：整份當純文字看（程式碼檢視＝xml 語法上色＋行號）
           const text = await (await api(url)).text();
           if (stale()) return;
-          this.setCode(text, 'xml', file);
+          this.setCode(text, 'xml', file, el);
         } else if (runOn) {
           // 執行網頁程式：先向同源 /api/rawopen 拿一組 capability token，整頁從
           // /raw/<token>/… 載入（相對路徑自然解析）。iframe 沙箱不給
@@ -412,14 +801,14 @@ export class Reader {
           // （token 只服務這個檔案所在目錄樹＋頁面 file:/// 引用到的檔）。
           const raw = await apiJson('/api/rawopen?path=' + encodeURIComponent(file.path));
           if (stale() || !raw.ok) return;
-          this.body.innerHTML = '';
+          el.innerHTML = '';
           const ifr = document.createElement('iframe');
           ifr.setAttribute('sandbox', 'allow-scripts allow-popups allow-modals allow-downloads');
           ifr.title = t('viewPreviewTitle');
           // 不把本機檔案路徑（iframe 自己的網址）洩給頁面抓的外部資源
           ifr.setAttribute('referrerpolicy', 'no-referrer');
           ifr.src = raw.url;
-          this.body.appendChild(ifr);
+          el.appendChild(ifr);
         } else {
           const text = await (await api(url)).text();
           if (stale()) return;
@@ -430,66 +819,66 @@ export class Reader {
           if (!hasScript) this.btnRun.hidden = true;
           const html = await rewriteHtml(text, file.path);
           if (stale()) return;
-          this.body.innerHTML = '';
+          el.innerHTML = '';
           const ifr = document.createElement('iframe');
           // 不給 allow-scripts：網頁裡的程式一律不跑。allow-same-origin 只是讓外層能接手「點連結」
           ifr.setAttribute('sandbox', 'allow-same-origin allow-popups allow-popups-to-escape-sandbox');
           ifr.srcdoc = html;
           ifr.addEventListener('load', () => this.wireLinks(ifr, file));
-          this.body.appendChild(ifr);
+          el.appendChild(ifr);
           // sr-only 純文字摘錄（腳本已剔除）：side-panel agent／文字抽取器常跳過
           // iframe，把這頁的可見文字平放在旁邊它們才讀得到；上限 20KB
           const mtext = htmlVisibleText(text);
           if (mtext) {
             const pre = document.createElement('pre');
             pre.className = 'mirror-html-text';
-            pre.setAttribute('aria-label', '此頁面的可見文字摘錄 / Plain-text extract of this page');
+            pre.setAttribute('aria-label', '此頁面的可見文字摘錄 / Plain-text extract of this page'); // zh-scan-ok: 刻意雙語——給讀頁面文字的 agent／抽取器看的標記（同 mirror.js 的處理）
             pre.textContent = mtext;
-            this.body.appendChild(pre);
+            el.appendChild(pre);
           }
         }
       } else if (file.kind === 'sheet') {
         const buf = await (await api(url)).arrayBuffer();
         const wb = XLSX.read(buf, { type: 'array' });
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true });
-        this.body.innerHTML = rowsToTable(rows.slice(0, 300));
+        el.innerHTML = rowsToTable(rows.slice(0, 300));
       } else {
         const text = await (await api(url)).text();
         if (this.canEdit(file)) this.rawText = text;   // 編輯器進場用（原始檔，不是 pretty 版）
         if (file.kind === 'markdown') {
-          this.body.className = 'md';
+          el.className = 'md';
           if (typeof marked !== 'undefined') {
             const { fm, body: mdBody } = splitFrontmatter(text);
             const prepped = mapOutsideCode(mdBody, seg => obsidianInline(seg, file.path));
             const raw = marked.parse(prepped);
             const purify = typeof DOMPurify !== 'undefined';
-            if (purify) this.body.innerHTML = DOMPurify.sanitize(raw);
-            else { this.body.innerHTML = '<pre></pre>'; this.body.querySelector('pre').textContent = mdBody; }
+            if (purify) el.innerHTML = DOMPurify.sanitize(raw);
+            else { el.innerHTML = '<pre></pre>'; el.querySelector('pre').textContent = mdBody; }
             if (fm && fm.length) {
               const box = frontmatterHtml(fm);   // 內容已全部 escape；有 DOMPurify 就再過一層
-              this.body.insertAdjacentHTML('afterbegin', purify ? DOMPurify.sanitize(box) : box);
+              el.insertAdjacentHTML('afterbegin', purify ? DOMPurify.sanitize(box) : box);
             }
-            this.styleCallouts();
-            this.tagify();
-            this.wireEmbeds(file);
-          } else { this.body.innerHTML = '<pre></pre>'; this.body.querySelector('pre').textContent = text; }
+            this.styleCallouts(el);
+            this.tagify(el);
+            this.wireEmbeds(file, el);
+          } else { el.innerHTML = '<pre></pre>'; el.querySelector('pre').textContent = text; }
         } else if (file.kind === 'json') {
           let pretty = text;
           try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
-          this.setCode(pretty, 'json', file);
+          this.setCode(pretty, 'json', file, el);
         } else if (file.kind === 'table') {
           const delim = file.ext === '.tsv' ? '\t' : ',';
           const rows = text.split(/\r?\n/).filter(l => l.trim()).slice(0, 500).map(l => l.split(delim));
-          this.body.innerHTML = rowsToTable(rows);
+          el.innerHTML = rowsToTable(rows);
         } else if (file.kind === 'code') {
-          this.setCode(text, extToLang(file.ext) || 'auto', file);
+          this.setCode(text, extToLang(file.ext) || 'auto', file, el);
         } else {
-          this.setPre(text);
+          this.setPre(text, el);
         }
       }
-      if (hl) markText(this.body, hl);
+      if (hl) markText(el, hl);
     } catch (err) {
-      this.body.innerHTML = `<p class="msg-err">${escapeHtml(t('readFail', { msg: String(err.message || err) }))}</p>`;
+      el.innerHTML = `<p class="msg-err">${escapeHtml(t('readFail', { msg: String(err.message || err) }))}</p>`;
     }
   }
 
@@ -517,16 +906,18 @@ export class Reader {
     }, true);
   }
 
-  setPre(text) {
-    this.body.innerHTML = '<pre></pre>';
-    this.body.querySelector('pre').textContent = text;
+  setPre(text, into) {
+    const el = into || this.body;
+    el.innerHTML = '<pre></pre>';
+    el.querySelector('pre').textContent = text;
   }
 
   // 程式碼檢視（codetheme.js）：行號槽＋等寬字＋經典配色上色；超過 512KB 的檔維持純文字
-  setCode(text, lang, file) {
-    this.body.className = 'code';
+  setCode(text, lang, file, into) {
+    const el = into || this.body;
+    el.className = 'code';
     setCodeControlsVisible(true);
-    renderCodeView(this.body, text, {
+    renderCodeView(el, text, {
       lang,
       plain: !!(file && file.size > 512 * 1024),
       // 檔案位元組數給效能門檻用（門檻以 byte 計，CJK 檔 char≠byte）；
@@ -538,8 +929,8 @@ export class Reader {
   // ---- Obsidian 風格（callout / #tag / 嵌入圖 / wikilink 點擊） ----
 
   // > [!note] Title：第一個文字節點開頭是 [!type] 的 blockquote 才換裝，普通引言不動
-  styleCallouts() {
-    for (const bq of this.body.querySelectorAll('blockquote')) {
+  styleCallouts(into) {
+    for (const bq of (into || this.body).querySelectorAll('blockquote')) {
       const walker = document.createTreeWalker(bq, NodeFilter.SHOW_TEXT);
       let tn = walker.nextNode();
       // marked 會在 blockquote 開頭塞純換行節點；巢狀時只認「最近的 blockquote 是自己」的節點
@@ -560,15 +951,16 @@ export class Reader {
   }
 
   // #tag → 暗淡小膠囊（不做連結）；不進 code/pre/標題/連結/frontmatter 盒
-  tagify() {
+  tagify(into) {
+    const root = into || this.body;
     const SKIP = new Set(['PRE', 'CODE', 'A', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
     const RE = /(^|[^\p{L}\p{N}_/&#])#([\p{L}\p{N}_][\p{L}\p{N}_-]*(?:\/[\p{L}\p{N}_-]+)*)/gu;
-    const walker = document.createTreeWalker(this.body, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       if (!/#[\p{L}\p{N}_]/u.test(n.nodeValue)) continue;   // 快篩（與主 regex 的字首條件一致）
       let bad = false;
-      for (let p = n.parentElement; p && p !== this.body; p = p.parentElement) {
+      for (let p = n.parentElement; p && p !== root; p = p.parentElement) {
         if (SKIP.has(p.tagName) || p.closest('.obs-fm') || p.classList.contains('obs-callout-title')) { bad = true; break; }
       }
       if (!bad) nodes.push(n);
@@ -596,8 +988,8 @@ export class Reader {
   }
 
   // 嵌入圖：同資料夾猜不到就等 error 再全域找（不擋渲染）；若掛監聽前就已失敗，手動補跑一次
-  wireEmbeds(file) {
-    for (const img of this.body.querySelectorAll('img.obs-embed')) {
+  wireEmbeds(file, into) {
+    for (const img of (into || this.body).querySelectorAll('img.obs-embed')) {
       const fallback = async () => {
         if (img.dataset.obsTried) return;
         img.dataset.obsTried = '1';
@@ -778,11 +1170,15 @@ function resolveLocal(filePath, href) {
   return { path: joinPath(dirOf(filePath), h), hash };
 }
 const fileUrl = p => '/api/file?path=' + encodeURIComponent(p);
+// 偽分頁 → 「長得像檔案」的物件，給檔案模式的渲染器吃（path 換成真檔、抓取走 urlPath）
+const localAsFile = file => ({
+  ...file, path: file.localPath, urlPath: fileUrl(file.localPath),
+  ext: pathExtOf(file.localPath), kind: file.localKind
+});
 
 // ---- Obsidian 風格 markdown：全部在「純文字前處理 → 產出仍過 DOMPurify」框架內完成 ----
 
 const IMG_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif', '.ico'];
-function pathExtOf(p) { const m = /\.[^.\\/]+$/.exec(p || ''); return m ? m[0].toLowerCase() : ''; }
 const isImageName = n => IMG_EXTS.includes(pathExtOf(n));
 
 // YAML frontmatter（檔案開頭的 --- 區塊）：拆出來做成屬性盒，不當本文渲染

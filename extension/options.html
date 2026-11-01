@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title data-i18n-page="optTitle">RiffleDesk Tabs Bridge 設定</title>
+<style>
+  body { font: 14px/1.6 system-ui, "Microsoft JhengHei", sans-serif; max-width: 520px; margin: 32px auto; padding: 0 16px; color: #222; }
+  h1 { font-size: 18px; }
+  label { display: block; margin: 14px 0 4px; font-weight: 600; }
+  input { width: 120px; padding: 5px 8px; font-size: 14px; border: 1px solid #bbb; border-radius: 6px; }
+  button { margin-top: 12px; padding: 6px 18px; font-size: 14px; border: 1px solid #888; border-radius: 6px; background: #f5f5f5; cursor: pointer; }
+  button:hover { border-color: #333; }
+  .note { color: #666; font-size: 12.5px; }
+  #status { margin-top: 14px; font-size: 12.5px; color: #444; white-space: pre-wrap; }
+  label.chk { display: flex; align-items: center; gap: 7px; margin: 18px 0 4px; }
+  label.chk input { width: auto; margin: 0; }
+  h2 { font-size: 14px; margin: 22px 0 6px; }
+  #debug { font-size: 12px; color: #555; white-space: pre-wrap; background: #f6f6f6; border: 1px solid #ddd;
+           border-radius: 6px; padding: 8px 10px; max-height: 260px; overflow: auto; margin: 0; }
+</style>
+</head>
+<body>
+  <!-- 下面的中文只是 i18n.js 跑起來前的臨時字；RD_I18N.applyStatic 會整頁換掉 -->
+  <h1>RiffleDesk Tabs Bridge</h1>
+  <p class="note" data-i18n="optIntro">這個擴充把你 Chrome 開著的網頁清單送到本機的 RiffleDesk（127.0.0.1）顯示成卡片。什麼都不會傳到別的地方。</p>
+  <label for="port" data-i18n="optPortLabel">RiffleDesk 伺服器埠號</label>
+  <input id="port" type="number" min="1" max="65535" step="1">
+  <div class="note" data-i18n="optPortNote">預設 5177。只有你用別的埠號跑 RiffleDesk 才需要改（例如 PORT=5180）。</div>
+  <button id="save" data-i18n="optSave">存</button>
+  <label class="chk"><input id="idleSweep" type="checkbox"> <span data-i18n="optIdle">閒置時自動補拍截圖</span></label>
+  <div class="note" data-i18n="optIdleNote"></div>
+  <label class="chk"><input id="autoHideDrawer" type="checkbox"> <span data-i18n="optDrawer">自動收合側欄（滑鼠碰右邊緣展開）</span></label>
+  <div class="note" data-i18n="optDrawerNote"></div>
+  <button id="clearShots" data-i18n="optClearShots">清除截圖快取</button> <span id="clearShotsMsg" class="note"></span>
+  <div class="note" data-i18n="optCacheNote"></div>
+  <div id="status"></div>
+  <h2 data-i18n="optDbgTitle">除錯：抓網頁文字／代表圖失敗紀錄</h2>
+  <pre id="debug"></pre>
+  <script src="defaults.js"></script>
+  <script src="i18n.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

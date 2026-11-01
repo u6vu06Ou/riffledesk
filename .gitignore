@@ -9,6 +9,7 @@ crates/*/target/
 .claude/worktrees/
 tests/fixtures/_test-config.json
 docs/media/_raw/
+dist/
 index.db
 index.db-wal
 index.db-shm

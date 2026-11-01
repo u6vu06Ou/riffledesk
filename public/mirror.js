@@ -89,7 +89,7 @@ const STATIC_ARIA = {
   btnMdPreview: '切換 編輯／預覽（Ctrl+E）/ Toggle edit / preview (Ctrl+E)',
   btnUndoTop: '復原上一步（Ctrl+Z）/ Undo the last step (Ctrl+Z)',
   btnSelAll: '全選目前資料夾的所有檔案（Ctrl+A）/ Select every file in the current folder (Ctrl+A)',
-  btnViewHome: '回到預設視角 / Back to the default camera view',
+  btnViewHome: '回到預設視角（雙擊空白處也可以）/ Back to the default camera view (or double-click empty space)',
   btnViewFav: '回到「我的視角」/ Jump to your saved camera view',
   btnViewSave: '把現在的視角存成「我的視角」/ Save the current camera view'
 };
