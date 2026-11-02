@@ -233,7 +233,9 @@ if (no3d) {
   watchContextLoss();
 }
 const reader = new Reader();
-let tUser = 1 / 3;
+// 左欄預設寬：0.15（約 1/7）——樹只要看得到資料夾名就好，空間留給 3D 卡堆。
+// 拖過的值存 localStorage，之後以拖的為準；雙擊分隔線回到這個預設。
+let tUser = 0.15;
 try { const s = parseFloat(localStorage.getItem('floderTreeFrac')); if (s > 0.1 && s < 0.6) tUser = s; } catch (_) {}
 // 三欄右區內的卡堆佔比（splitter2 拖動值，存 localStorage 沿用；↺ 回三欄時還原）
 let vUser = 0.5;
@@ -376,9 +378,9 @@ function syncTreeBtn() {
 // 拖到最左邊＝收合左欄。門檻帶遲滯（收在 12px 內、展要拖過 32px），游標在邊界抖才不會來回跳。
 const COLLAPSE_AT_PX = 12, EXPAND_AT_PX = 32;
 
-// splitter1：樹｜右區（twocol 專屬）
+// splitter1：樹｜右區（full 滿版閱讀以外都能拖；三欄／wide 也調樹寬）
 trackSplitter(splitter, {
-  activeWhen: () => mode === 'twocol',
+  activeWhen: () => mode !== 'full',
   onMove: ev => {
     // 收合時保留 tUser，展開就回到原本寬度
     const collapse = treeCollapsed ? ev.clientX <= EXPAND_AT_PX : ev.clientX <= COLLAPSE_AT_PX;
@@ -387,7 +389,7 @@ trackSplitter(splitter, {
       tUser = clamp(ev.clientX / innerWidth, Math.max(MIN_COL_PX / innerWidth, 0.12), 0.5);
       saveFrac('floderTreeFrac', tUser);
     }
-    fracs = MODES.twocol();
+    fracs = MODES[mode]();
     applyFracs(fracs);
   },
   // 拖完（含拖到最左＝收合左欄）：卡堆欄變了寬，落點一樣回到「我的視角」／預設視角
@@ -399,9 +401,9 @@ trackSplitter(splitter, {
   onDbl: () => {
     treeCollapsed = false;
     syncTreeBtn();
-    tUser = 1 / 3;
+    tUser = 0.15;
     saveFrac('floderTreeFrac', tUser);
-    fracs = MODES.twocol();
+    fracs = MODES[mode]();
     applyFracs(fracs);
     settleViewFor(mode);
     if (stack.extracted) stack.restage(readerRectFor(mode));
@@ -509,7 +511,16 @@ const tree = new FolderTree(treeEl, {
     return loadFolder(sel.path);
   },
   // 真正鎖定發生時（滑鼠點、方向鍵 debounce 到點）取消任何還在等的方向鍵載入
-  onLock: sel => { clearTimeout(navTimer); navTimer = null; previewCrowCancel(); tabsMode.drop(); exitPseudo(false); dropPile(); lockedFolder = sel.path; return loadFolder(sel.path); },
+  onLock: sel => {
+    clearTimeout(navTimer); navTimer = null;
+    previewCrowCancel(); tabsMode.drop(); exitPseudo(false); dropPile();
+    // wide／full 時卡堆是藏起來的：點樹卻不換版面＝畫面零回饋，看起來像卡住。
+    // 點樹就是要逛檔案 → 回三欄讓點到的資料夾的卡真的露出來。
+    // （投影走 tree.lock 也會經過這裡，但 projectOpen 緊接著會 setMode('wide') 蓋回來）
+    if (!PANEL && (mode === 'wide' || mode === 'full')) setMode('threecol');
+    lockedFolder = sel.path;
+    return loadFolder(sel.path);
+  },
   onPinChanged: async () => { await tree.boot(); buildConvoSections(); }
 });
 tree.exts = extsParam();

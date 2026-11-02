@@ -468,6 +468,13 @@ export class Reader {
       img.alt = tab.title || '';
       img.src = '/api/tabs/shot?id=' + encodeURIComponent(tab.id) + '&t=' + (file.mtime || 0);
       body.appendChild(img);
+    } else {
+      // 還沒有快照：canvas 類頁面（Google 試算表等）下方只會出現選單文字，
+      // 使用者會以為壞掉——先告訴他為什麼、以及怎麼讓縮圖出現
+      const noShot = document.createElement('div');
+      noShot.className = 'tabstat';
+      noShot.textContent = t('tabsNoShot');
+      body.appendChild(noShot);
     }
     const stat = document.createElement('div'); stat.className = 'tabstat';
     body.appendChild(stat);
@@ -638,21 +645,30 @@ export class Reader {
     actGrp.append(btnAct, btnOpen);
     bar.append(segGrp, actGrp);
     body.appendChild(bar);
-    if (tab.hasShot) {
-      const img = document.createElement('img');
-      img.className = 'tabshot';
-      img.alt = tab.title || '';
-      img.src = '/api/tabs/shot?id=' + encodeURIComponent(tab.id) + '&t=' + (file.mtime || 0);
-      body.appendChild(img);
-    }
+    // 能直接捲著看的本體（pdf／圖片／表格）吃下近乎整個右欄：本體排最上面、
+    // 瀏覽器截圖整張不顯示（跟即時內容重複又佔版面）。文字類維持原序（截圖在前，
+    // 快速對照）——那種截圖是唯一的「長相」預覽。
+    const DIRECT = new Set(['pdf', 'image', 'table']);
+    const direct = DIRECT.has(file.localKind);
     const stat = document.createElement('div'); stat.className = 'tabstat';
     const srcBox = document.createElement('pre'); srcBox.className = 'tabtext';
     srcBox.hidden = true;
     // 內容盒子先掛上去：後面的 await 都在它裡面畫，不必再改寫共用的 this.body
     const box = document.createElement('div');
     box.className = 'tabfile-body';
+    // pdf 讓內容盒撐滿剩餘高度：iframe 的 height:100% 需要定高容器；否則塌預設高、
+    // 右欄下方留一大片空白。class 在 open() 第一行 className='' 就清掉，不必自己移除。
+    if (file.localKind === 'pdf') body.classList.add('tablocal');
+    if (direct) body.appendChild(box);
+    if (tab.hasShot && !direct) {
+      const img = document.createElement('img');
+      img.className = 'tabshot';
+      img.alt = tab.title || '';
+      img.src = '/api/tabs/shot?id=' + encodeURIComponent(tab.id) + '&t=' + (file.mtime || 0);
+      body.appendChild(img);
+    }
     body.appendChild(stat);
-    body.appendChild(box);
+    if (!direct) body.appendChild(box);
 
     let mode = 'text';
     const renderMode = () => {
@@ -784,7 +800,10 @@ export class Reader {
       if (file.kind === 'image') {
         el.innerHTML = `<img class="reader-img" src="${url}" alt="">`;
       } else if (file.kind === 'pdf') {
-        el.innerHTML = `<iframe src="${url}" title="pdf"></iframe>`;
+        // Chrome 內建 PDF 檢視器吃網址 fragment 參數（實測 Chrome 156，見
+        // tests/pdf-fragment-manual.mjs）：navpanes=0 預設收掉縮圖側欄、
+        // zoom=page-width 依視窗寬度縮放。工具列保留（頁碼／下載／列印還要用）。
+        el.innerHTML = `<iframe src="${url}#navpanes=0&zoom=page-width" title="pdf"></iframe>`;
       } else if (file.kind === 'html') {
         const runOn = this.htmlRunOn(file);
         const srcOn = this.srcPref.get(pathKey(file.path)) === true;

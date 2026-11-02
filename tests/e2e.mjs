@@ -865,7 +865,7 @@ async function main() {
       console.log('skip S7: ' + CAE + ' not found');
     }
     // ============ S9：雙分隔線（coordinator 追加 C）============
-    // ① twocol 拖 splitter1 改樹寬（GL 對齊、樹最小 ~200px、dblclick 回預設 1/3）
+    // ① twocol 拖 splitter1 改樹寬（GL 對齊、樹最小 ~200px、dblclick 回預設 0.15）
     // ② 三欄拖 splitter2 即時兩欄連動＋卡堆重新置中＋前排寬帶重算，拖動中禁止選取
     // ③ 卡堆欄最小 ~200px（1366 下不會到 90% → 維持三欄）  ④ ↺ 還原使用者上次比例
     // ⑤ dblclick splitter2 回預設各半  ⑥ 比例存 localStorage，重整後沿用
@@ -910,12 +910,12 @@ async function main() {
         await sleep(250);
         const tw9 = await pg.evaluate(() => __dbg.fracs().tree * innerWidth);
         ok(tw9 >= 190 && tw9 <= 232, 's9-tree-min-200px', { treePx: Math.round(tw9) });
-        // dblclick → 回預設 1/3（同樣重新取框）
+        // dblclick → 回預設 0.15（同樣重新取框）
         const sp1c = await pg.locator('#splitter').boundingBox();
         await pg.mouse.dblclick(sp1c.x + 3, y9);
         await sleep(350);
         const td = await pg.evaluate(() => __dbg.fracs().tree);
-        ok(Math.abs(td - 1 / 3) < 0.02, 's9-splitter1-dblclick-default', { tree: +td.toFixed(3) });
+        ok(Math.abs(td - 0.15) < 0.02, 's9-splitter1-dblclick-default', { tree: +td.toFixed(3) });
         // 防呆：前述拖動若誤觸樹列預覽換了資料夾，重新鎖回 size20 再進三欄段
         await lockFolderIdle(P.size20, pg);
       }

@@ -103,7 +103,9 @@
   @media (max-width: 1280px) { #toolbar .brand { display: none; } }
   #searchBox {
     background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
-    border-radius: 6px; padding: 5px 8px; font-size: 13px; outline: none; width: 260px; flex: 0 1 260px; min-width: 120px;
+    border-radius: 6px; padding: 5px 8px; font-size: 13px; outline: none; width: 260px; flex: 0 0 260px;
+    /* 不縮水：檔案模式工具列較擠時由 chips（可捲）／status 吸收，搜尋框寬固定，
+       右邊的檔案／分頁切換鈕才不會隨模式左右跳 */
   }
   /* chips 放不下時橫向捲（滾輪可捲），兩端淡出提示還有 */
   #chips { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; flex: 0 1 auto; min-width: 80px;
@@ -270,7 +272,8 @@
     left: 33.33%; margin-left: -7px;   /* JS 以 right 邊對齊樹右緣＝WebGL 視區左緣 */
   }
   #splitter:hover, #splitter.drag { background: var(--accent-soft); }
-  body:not(.mode-twocol) #splitter { display: none; }
+  /* 只有 full（閱讀欄滿版）才藏：三欄／wide 模式下樹｜卡堆這條也要能拖 */
+  body.mode-full #splitter { display: none; }
   /* 左欄收合時樹寬 0：分隔線改貼齊畫面左緣，還抓得到（往右拖就展開） */
   body.tree-collapsed #splitter { margin-left: 0; }
 
@@ -578,6 +581,11 @@
   #readerBody .tabexplain + .tabview-bar { justify-content: center; margin: 0 0 6px; }
   /* file:// 分頁的檔案內容：直接沿用檔案模式的內文樣式（md／表格／圖片都在裡面） */
   #readerBody .tabfile-body { margin-top: 4px; }
+  /* 本機檔分頁的 PDF：bar＋截圖之下，內容盒吃滿剩餘高度（iframe height:100% 要定高容器） */
+  #readerBody.tablocal { display: flex; flex-direction: column; }
+  #readerBody.tablocal .tabshot { align-self: flex-start; }
+  #readerBody.tablocal .tabfile-body { flex: 1; min-height: 0; }
+  #readerBody.tablocal .tabfile-body iframe { display: block; }
 
   /* 快速跳轉捲軸（scrub.js）：檔案多時出現在卡堆右側 */
   #scrub { position: fixed; z-index: 12; width: 14px; }
@@ -690,13 +698,15 @@
 <div id="toolbar">
   <span class="brand" data-i18n="brand">3D 檔案瀏覽器</span>
   <input id="searchBox" type="search" data-i18n-ph="searchPh" placeholder="過濾目前資料夾檔名…">
-  <div id="chips"></div>
-  <select id="chipSel" data-i18n-title="chipTypeDrop" hidden></select>
-  <select id="sortSel" data-i18n-title="sortTitle"></select>
+  <!-- 檔案／分頁切換釘在搜尋框右邊：檔案或分頁模式下位置都不動（chips/排序排在它後面，
+       tabs-on 藏掉 chips 時按鈕不再左右跳） -->
   <div id="modeSeg" role="group" aria-label="mode">
     <button id="btnModeFiles" class="chip" data-i18n="modeFiles" data-i18n-title="modeFilesTitle">檔案</button>
     <button id="btnTabs" class="chip" data-i18n="tabsBtn" data-i18n-title="tabsModeTitle">分頁</button>
   </div>
+  <div id="chips"></div>
+  <select id="chipSel" data-i18n-title="chipTypeDrop" hidden></select>
+  <select id="sortSel" data-i18n-title="sortTitle"></select>
   <!-- 只有側邊欄看得見（預設 hidden）：回到完整畫面＝聚焦主視窗＋定位到這張卡＋收起側欄 -->
   <button id="btnBackToFull" class="tbtn" hidden data-i18n-label="backFullLabel" data-i18n-title="backFullTitle">⤢</button>
   <!-- 完整版工具列（擴充連上才顯示）：原地切側邊欄模式；右欄在預覽網頁時順便把 Chrome 切過去 -->
