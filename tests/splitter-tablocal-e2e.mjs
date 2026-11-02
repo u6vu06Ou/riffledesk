@@ -30,6 +30,8 @@ fs.mkdirSync(RD('root'), { recursive: true });
 for (let i = 1; i <= 6; i++) {
   fs.writeFileSync(RD(`root/note${i}.md`), `# note ${i}\nsplitter fixture\n`);
 }
+const JSON_PATH = RD('root/data.json');
+fs.writeFileSync(JSON_PATH, '{"alpha": 1, "beta": "two", "gamma": [3, 4]}\n');
 // 最小合法 PDF：只要 /api/file 以 application/pdf 送出、Chrome 內建檢視器肯接就行
 const PDF_BODY = [
   '%PDF-1.4',
@@ -217,6 +219,22 @@ async function main() {
   });
   ok(!noShotNote.hasImg && noShotNote.notes.some(s => s.length > 8 && !/^(抓不到|failed)/i.test(s)),
     '無快照分頁出現說明文字（不讓人以為壞掉）', noShotNote);
+
+  // ---------- F. JSON 卡片縮圖跟隨程式碼配色主題（歐哥 2026-11-02：One Dark 沒套用到卡片）----------
+  const themeCheck = await page.evaluate(async (jpath) => {
+    const ct = await import('./codetheme.js');
+    const th = await import('./thumbs.js');
+    ct.setCodeTheme('one-dark');
+    const f = { name: 'data.json', path: jpath, ext: '.json', kind: 'json', size: 64, mtime: Date.now() };
+    const c = await th.buildThumbCanvas(f);
+    const ctx = c.getContext('2d');
+    const d = ctx.getImageData(100, 500, 1, 1).data;   // 卡身中段（標題列 96px 以下）
+    ct.setCodeTheme('follow');
+    return { r: d[0], g: d[1], b: d[2] };
+  }, JSON_PATH);
+  // One Dark 底色 #282c34：修好前這裡是 UI 淺色卡身（theme() 的底色）
+  ok(themeCheck.r === 0x28 && themeCheck.g === 0x2c && themeCheck.b === 0x34,
+    'JSON 卡縮圖底色跟隨 One Dark（#282c34）', themeCheck);
 
   ok(pageErrors.length === 0, '頁面無 JS 錯誤', pageErrors.slice(0, 3));
 }

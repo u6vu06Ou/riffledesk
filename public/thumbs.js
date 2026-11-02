@@ -182,9 +182,15 @@ function paintMarkdown(ctx, W, H, text, tabH) {
   }
 }
 
+// JSON 卡跟程式碼卡同一家：底色／挑色都走目前的程式碼配色（codeTheme 下拉選鈕）。
+// 以前混搭 UI 主題的 jsonKey/jsonStr，結果選了深色程式碼配色、卡身還是亮的——
+// 「閱讀區黑了卡片沒黑」那次。follow（預設）時配色＝UI 主題，外觀沒變。
 function paintJson(ctx, W, H, text, tabH) {
   let pretty = text;
   try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
+  const pal = thumbCodeColors();
+  ctx.fillStyle = pal.bg;
+  ctx.fillRect(0, tabH, W, H - tabH);
   const lines = pretty.split(/\r?\n/).slice(0, 40);
   let y = tabH + 26;
   ctx.font = '22px Consolas, monospace';
@@ -193,18 +199,18 @@ function paintJson(ctx, W, H, text, tabH) {
     const m = ln.match(/^(\s*)"(.*?)"(\s*:\s*)(.*)$/);
     if (m) {
       let x = 16;
-      ctx.fillStyle = theme().dim;
+      ctx.fillStyle = pal.comment;
       if (m[1]) { ctx.fillText(m[1], x, y); x += ctx.measureText(m[1]).width; }
-      ctx.fillStyle = theme().jsonKey;
+      ctx.fillStyle = pal.attr;
       const key = `"${m[2]}"`;
       ctx.fillText(key, x, y); x += ctx.measureText(key).width;
-      ctx.fillStyle = theme().dim;
+      ctx.fillStyle = pal.comment;
       ctx.fillText(m[3], x, y); x += ctx.measureText(m[3]).width;
       const v = m[4];
-      ctx.fillStyle = /^"/.test(v) ? theme().jsonStr : /^-?[\d.]/.test(v) ? theme().jsonNum : theme().dim;
+      ctx.fillStyle = /^"/.test(v) ? pal.string : /^-?[\d.]/.test(v) ? pal.number : pal.comment;
       ctx.fillText(ellipsis(ctx, v, 16 + W - 32 - x), x, y);
     } else {
-      ctx.fillStyle = theme().text;
+      ctx.fillStyle = pal.fg;
       ctx.fillText(ellipsis(ctx, ln, W - 32), 16, y);
     }
     y += 32;

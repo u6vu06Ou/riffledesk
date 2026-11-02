@@ -116,7 +116,8 @@ export function tokenizeLine(line) {
 }
 export function thumbCodeColors() {
   const p = currentPalette();
-  return { bg: p.bg, fg: p.fg, keyword: p.keyword, string: p.string, comment: p.comment };
+  return { bg: p.bg, fg: p.fg, keyword: p.keyword, string: p.string, comment: p.comment,
+    number: p.number, attr: p.attr };
 }
 
 // ---- 瀏覽器端 ---------------------------------------------------------------
