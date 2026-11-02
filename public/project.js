@@ -448,13 +448,43 @@ export function handlePile(data) {
     id: data.id,
     title: typeof data.title === 'string' && data.title ? data.title : t('pileNoTitle'),
     count: Number(data.count) || 0,
+    source: data.source || null,
     at: data.at || Date.now()
   };
   pushPile(rec);
   if (mine) return;                // 自己合併出來的疊：已經打開了，不用再提示
+  // 只有一個檔的疊＝單檔投影：直接走投影那條路開檔（前景開閱讀、背景進 pending），不跳 toast
+  if (rec.count === 1) { openPileAsProjection(rec); return; }
   pilePending = rec;
   // reuse the projection merge window: a burst of piles collapses into one notice
   scheduleFlushPile();
+}
+
+async function openPileAsProjection(rec) {
+  let f = null;
+  try {
+    const r = await fetch('/api/pile?id=' + encodeURIComponent(rec.id), { cache: 'no-store' });
+    const d = await r.json();
+    f = ((d && d.files) || [])[0] || null;
+  } catch (_) { /* fall through: an unreadable pile still deserves its toast */ }
+  if (!f) { pilePending = rec; scheduleFlushPile(); return; }
+  const proj = {
+    path: f.path,
+    name: f.name || String(f.path).split(/[\\/]/).pop(),
+    line: null,
+    source: rec.source,
+    at: rec.at
+  };
+  if (pageVisible()) {
+    pending = [];
+    clearTimeout(mergeTimer); mergeTimer = null;
+    if (frontOn) { try { window.focus(); } catch (_) {} }
+    openPath(proj.path, proj.line);
+    return;
+  }
+  pending.push(proj);
+  if (pending.length > MAX_PENDING) pending.splice(0, pending.length - MAX_PENDING);
+  scheduleFlush();
 }
 
 function scheduleFlushPile() {

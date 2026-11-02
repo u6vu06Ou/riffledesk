@@ -131,6 +131,8 @@ async function main() {
   ok(r1.status === 200 && r1.body.delivered === 1, 'POST accepted and delivered to 1 tab', r1);
   await page.waitForFunction(() => window.__dbg.panel().open && window.__dbg.panel().file === 'single.md');
   ok(true, 'reader opened the projected file');
+  ok(await page.evaluate(() => document.body.classList.contains('mode-wide')), 'projection switched to the wide (2/3) layout');
+  ok((await page.evaluate(() => window.__dbg.mode())) === 'wide', 'layout state machine reports wide');
   const dbgScroll = await page.evaluate(async () => {
     const b = document.getElementById('readerBody');
     const before = b.scrollTop;
@@ -257,6 +259,8 @@ async function main() {
   await page.waitForFunction(() => window.__dbg && window.__dbg.ready(), null, { timeout: 20000 });
   await page.waitForFunction(() => window.__dbg.panel().open && window.__dbg.panel().file === 'single.md', null, { timeout: 15000 });
   ok(true, 'url projection opened the reader');
+  ok(await page.evaluate(() => document.body.classList.contains('mode-wide')), 'url projection also lands on the wide layout');
+  ok((await page.evaluate(() => window.__dbg.mode())) === 'wide', 'url projection sets the state machine to wide');
   await page.waitForFunction(() => window.__dbg.projLine() != null, null, { timeout: 5000 }).catch(() => {});
   const urlLine = await page.evaluate(() => window.__dbg.projLine());
   ok(urlLine != null && urlLine > 0, 'url projection scrolled to the line', urlLine);
@@ -273,6 +277,7 @@ async function main() {
   await page.waitForFunction(() => window.__dbg && window.__dbg.ready(), null, { timeout: 20000 });
   await page.waitForFunction(() => window.__dbg.panel().open && window.__dbg.panel().file === 'single.md', null, { timeout: 15000 });
   ok(true, 'url projection without a line still opens the file');
+  ok(await page.evaluate(() => document.body.classList.contains('mode-wide')), 'still wide without a line');
   ok(!/[?&]open=/.test(await page.evaluate(() => location.search)), 'url without a line is cleared too');
 
   // ---------- 9. URL projection of a missing path → in-page toast, no errors, no params

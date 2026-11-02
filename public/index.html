@@ -222,6 +222,11 @@
     padding: 9px 10px 3px; font-size: 11px; color: var(--fg-dim); letter-spacing: 1px;
     text-transform: uppercase; user-select: none;
   }
+  /* 對話區的群組摺疊標題（近期／更早）：可點、右側帶則數 */
+  #tree .sec.gsec { cursor: pointer; display: flex; align-items: baseline; gap: 4px; padding-right: 6px; }
+  #tree .sec.gsec:hover { color: var(--fg); }
+  #tree .sec.gsec .gcar { width: 10px; flex: none; }
+  #tree .sec.gsec .gcnt { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none; }
   .trow {
     display: flex; align-items: center; gap: 2px; padding: 2px 6px 2px 0;
     cursor: pointer; user-select: none; border-radius: 5px; margin: 0 5px;

@@ -520,10 +520,18 @@ tree.exts = extsParam();
 let convoState = null;        // 目前卡堆在看的偽資料夾：{kind:'recent'|'changed',hours} | {kind:'convo',id,title}
 let pileState = null;         // 目前卡堆在看的一疊：{id, title, files}（AI 挑好的清單）
 let pileReturn = null;        // 開疊之前的資料夾：✕／Esc 回那裡
+// 開疊時順便自動開的閱讀欄：{path, mode, from}。使用者自己換檔／換版面就清掉，
+// 離開疊時只收「還停在這個自動開的檔、版面也沒被動過」的那種。
+let pileAutoReader = null;
 let convoWrap = null;         // #tree 裡的容器 div
 let convoGen = 0;             // 非同步回填數字的世代計數（重建後舊回應丟掉）
 let convoShowAuto = (() => { try { return localStorage.getItem('riffleConvoAuto') === '1'; } catch (_) { return false; } })();
-let convoShowN = 15;          // 對話列表先列 15 則，「顯示更多」+15
+let convoShowN = 15;          // 「更早」群組先列 15 則，「顯示更多」全開
+// 對話區兩個摺疊群組的開關狀態（記住）：24 小時內預設展開；更早預設收起
+let convo24Open = (() => { try { return localStorage.getItem('riffleConvo24Open') !== '0'; } catch (_) { return true; } })();
+let convoOldOpen = (() => { try { return localStorage.getItem('riffleConvoOldOpen') === '1'; } catch (_) { return false; } })();
+// 「更早」的全歷史清單：展開時才叫伺服器掃（第一次要解析所有 transcript，較久），60 秒內重用
+let convoDeepCache = { t: 0, data: null };
 let convoRowsMeta = [];       // [{row, cnt, id, lastN}]
 let recentRowsMeta = [];      // [{row, cnt, hours, lastN}]
 let changedRowsMeta = [];     // [{row, cnt, changedHours, lastN}] — —「最近改動」列，索引沒跑會整列藏起來
@@ -591,6 +599,16 @@ async function fetchConvoList(force) {
   return convoListCache.data;
 }
 
+// 全歷史深掃（days=3650）：只有使用者展開「更早」時才叫，絕不擋開啟速度
+async function fetchConvoListDeep() {
+  if (convoDeepCache.data && Date.now() - convoDeepCache.t < 60000) return convoDeepCache.data;
+  try {
+    const d = await apiJson('/api/convos?days=3650');
+    convoDeepCache = { t: Date.now(), data: d.convos || [] };
+  } catch (_) { convoDeepCache.data = convoDeepCache.data || []; }
+  return convoDeepCache.data;
+}
+
 async function fetchConvoFiles(id) {
   if (convoFilesCache.has(id)) return convoFilesCache.get(id);
   const d = await apiJson('/api/convo?id=' + encodeURIComponent(id));
@@ -633,13 +651,9 @@ async function buildConvoSections() {
   const all = await fetchConvoList();
   if (gen !== convoGen || !convoWrap.isConnected) return;
   convoRenderedFP = convoFingerprint(all);   // live.js 的 convos 事件靠這個判斷要不要重建
-  // 預設只列「你自己打字開的對話」；程式自動跑的（隊友工單、claude -p、別的 AI 派的 codex）收在最後一列
-  const autoN = all.filter(c => c.auto).length;
-  const convos = convoShowAuto ? all : all.filter(c => !c.auto);
   listEl.innerHTML = '';
   convoRowsMeta = [];
-  const shown = convos.slice(0, convoShowN);
-  for (const c of shown) {
+  const addConvoRow = (c) => {
     const m = makeCrow({
       icon: '💬', date: fmtConvDate(c.updated),
       label: c.title || t('convoNoTitle'),
@@ -654,19 +668,72 @@ async function buildConvoSections() {
     tree.attachCrow(m.row, { id: c.id, title: c.title });   // hover 預覽跟資料夾同一套
     listEl.appendChild(m.row);
     convoRowsMeta.push(m);
+  };
+  // 摺疊群組標題列（▾/▸＋名稱＋則數），點就切開關並記住
+  const grpHead = (label, n, open, onToggle) => {
+    const h = el('div', 'sec gsec' + (open ? ' open' : ''));
+    h.appendChild(el('span', 'gcar', open ? '▾' : '▸'));
+    h.appendChild(el('span', 'glabel', label));
+    if (n != null) h.appendChild(el('span', 'gcnt', String(n)));
+    h.addEventListener('click', onToggle);
+    return h;
+  };
+  const grpToggle = (key, get, set) => () => {
+    set(!get());
+    try { localStorage.setItem(key, get() ? '1' : '0'); } catch (_) {}
+    buildConvoSections();
+  };
+  // 「24 小時內」從快速的 30 天清單切出來（開啟零成本）；「更早」＝全歷史，
+  // 預設收起，第一次展開才深掃（慢，但那是使用者自己要的）
+  const cutoff = Date.now() - 86400000;
+  // 預設只列「你自己打字開的對話」；程式自動跑的（隊友工單、claude -p、別的 AI 派的 codex）收在最後一列
+  // auto 則數：深掃完成後把全歷史的也算進來（依 agent:id 去重）
+  const pool = (() => {
+    if (!convoDeepCache.data) return all;
+    const seen = new Set(all.map(c => c.agent + ':' + c.id));
+    return all.concat(convoDeepCache.data.filter(c => !seen.has(c.agent + ':' + c.id)));
+  })();
+  const autoN = pool.filter(c => c.auto).length;
+  const convos = convoShowAuto ? all : all.filter(c => !c.auto);
+  const fresh = convos.filter(c => (c.updated || 0) >= cutoff);
+  listEl.appendChild(grpHead(t('convoGrp24'), fresh.length, convo24Open,
+    grpToggle('riffleConvo24Open', () => convo24Open, v => { convo24Open = v; })));
+  if (convo24Open) {
+    if (!fresh.length) listEl.appendChild(el('div', 'crow-empty', t('convoEmpty24')));
+    for (const c of fresh) addConvoRow(c);
   }
-  if (!convos.length) listEl.appendChild(el('div', 'crow-empty', t('convoEmpty')));
-  // 「顯示更多」一次全部展開；全開後同一列變「收起」回到最近 15 則
-  if (convos.length > shown.length) {
-    const more = makeCrow({ icon: '▾', label: t('convoMore', { n: convos.length - shown.length }) });
-    more.row.classList.add('more');
-    more.row.addEventListener('click', () => { convoShowN = Infinity; buildConvoSections(); });
-    listEl.appendChild(more.row);
-  } else if (convos.length > 15 && convoShowN > 15) {
-    const less = makeCrow({ icon: '▴', label: t('convoLess') });
-    less.row.classList.add('more');
-    less.row.addEventListener('click', () => { convoShowN = 15; buildConvoSections(); });
-    listEl.appendChild(less.row);
+  const deepAll = convoDeepCache.data
+    ? (convoShowAuto ? convoDeepCache.data : convoDeepCache.data.filter(c => !c.auto))
+    : null;
+  // 24h 那組的絕對不會出現在這裡（cutoff 切分互斥，不用再去重）
+  const older = deepAll ? deepAll.filter(c => (c.updated || 0) < cutoff) : null;
+  listEl.appendChild(grpHead(t('convoGrpOld'), older ? older.length : null, convoOldOpen,
+    grpToggle('riffleConvoOldOpen', () => convoOldOpen, v => { convoOldOpen = v; })));
+  if (convoOldOpen) {
+    if (!older) {
+      listEl.appendChild(el('div', 'crow-empty', t('convoLoading')));
+      fetchConvoListDeep().then(() => buildConvoSections());   // 第一次掃全歷史，好了自己重畫
+    } else if (!older.length && !fresh.length) {
+      listEl.appendChild(el('div', 'crow-empty', t('convoEmpty')));
+    } else {
+      const shown = older.slice(0, convoShowN);
+      for (const c of shown) addConvoRow(c);
+      // 「顯示更多」一次全部展開；全開後同一列變「收起」回到最近 15 則
+      if (older.length > shown.length) {
+        const more = makeCrow({ icon: '▾', label: t('convoMore', { n: older.length - shown.length }) });
+        more.row.classList.add('more');
+        more.row.addEventListener('click', () => { convoShowN = Infinity; buildConvoSections(); });
+        listEl.appendChild(more.row);
+      } else if (older.length > 15 && convoShowN > 15) {
+        const less = makeCrow({ icon: '▴', label: t('convoLess') });
+        less.row.classList.add('more');
+        less.row.addEventListener('click', () => { convoShowN = 15; buildConvoSections(); });
+        listEl.appendChild(less.row);
+      }
+    }
+  } else if (!convos.length) {
+    // 30 天快速窗就空的話別宣判「沒有對話」——更早的可能根本還沒掃
+    listEl.appendChild(el('div', 'crow-empty', t('convoEmpty30')));
   }
   if (autoN) {
     const tog = makeCrow({ icon: convoShowAuto ? '▴' : '⚙', label: t(convoShowAuto ? 'convoAutoHide' : 'convoAutoShow', { n: autoN }) });
@@ -865,6 +932,40 @@ function applyPile() {
   stack.setFolder(pileState.title, files);
   showPileBar();
   statusEl.textContent = t('fileCount', { path: pileState.title, n: files.length });
+  // 開疊順便開第一顆看得到的檔（chips 全濾光就不開）；只有第一次進來才自動開
+  if (files.length && !pileAutoReader) autoOpenPileFront(files[0]);
+}
+
+// 疊展開後自動開第一顆檔進閱讀欄：卡堆讓到左邊（twocol→threecol），已在三欄以上不動。
+// 記下「這是順便開的」與開之前的版面，closePile 才收得回去。
+async function autoOpenPileFront(file) {
+  const from = mode;
+  if (!PANEL && mode === 'twocol') setMode('threecol');
+  const rec = { path: file.path, from, expectMode: mode };
+  pileAutoReader = rec;                 // 先記：開檔途中使用者換檔就算他的
+  stack.readingPath = file.path;
+  stack.poke();
+  if (PANEL) reader.setOpen(true);
+  reader.show();
+  await reader.open(file).catch(() => {});
+}
+
+// closePile 的收尾：只收「還停在自動開的那個檔、版面也沒被使用者動過」的閱讀欄
+function restorePileAutoReader(auto) {
+  pileAutoReader = null;
+  if (!auto || !reader.el.classList.contains('open')) return;
+  if (PANEL) { reader.setOpen(false); reader.hide(); stack.readingPath = null; return; }
+  if (mode !== auto.expectMode) return;                       // 使用者按過版面鈕
+  if (!reader.file || norm(reader.file.path) !== norm(auto.path)) return;   // 使用者自己換了檔
+  const restore = () => {
+    if (reader.revise.active()) reader.revise.detach();
+    reader.hide();
+    stack.readingPath = null;
+    stack.returnExtracted(false);
+    if (auto.from === 'twocol') setMode('twocol');            // 從例欄來就回兩欄；wide／full 照舊
+  };
+  if (reader.editing() && reader.editor.dirty) reader.tryLeave(restore);
+  else restore();
 }
 
 async function openPile(id, row) {
@@ -879,6 +980,7 @@ async function openPile(id, row) {
   if (!pileState) pileReturn = convoState ? { kind: 'crow', meta: { ...convoState } }
     : (lockedFolder ? { kind: 'folder', path: lockedFolder } : null);
   pileState = { id: d.id, title: d.title || t('pileNoTitle'), files };
+  pileAutoReader = null;
   exitPseudo(true);
   convoState = null;
   lockedFolder = null;
@@ -899,6 +1001,7 @@ function dropPile() {
   if (!pileState) return;
   pileState = null;
   pileReturn = null;
+  restorePileAutoReader(pileAutoReader);   // 疊被別的東西接手：順便開的閱讀欄也別留著
   for (const r of treeEl.querySelectorAll('#projPiles .sel')) r.classList.remove('sel');
 }
 
@@ -917,19 +1020,22 @@ async function reloadPile() {
 function closePile() {
   if (!pileState) return;
   const back = pileReturn;
+  const auto = pileAutoReader;
   pileState = null;
   pileReturn = null;
   for (const r of treeEl.querySelectorAll('#projPiles .sel')) r.classList.remove('sel');
   for (const r of treeEl.querySelectorAll('.crow.sel')) r.classList.remove('sel');
-  if (back && back.kind === 'folder') { tree.lock(back.path); return; }
+  if (back && back.kind === 'folder') { tree.lock(back.path); restorePileAutoReader(auto); return; }
   if (back && back.kind === 'crow') {
     if (back.meta.kind === 'recent') openRecent(back.meta.hours, null);
     else openConvo({ id: back.meta.id, title: back.meta.title }, null);
+    restorePileAutoReader(auto);
     return;
   }
   const first = (tree.roots && tree.roots[0]) || (tree.drives && tree.drives[0] && tree.drives[0].path);
   if (first) tree.lock(first);
   else { showPath(''); stack.setFolder('', []); }
+  restorePileAutoReader(auto);
 }
 // ==================== end AI 整理的疊 ====================
 
@@ -1018,6 +1124,8 @@ stack.getReaderRect = () => {
 // 開閱讀區看一張卡：檔案卡由 stack 的抽卡流程帶進來；分頁卡（完整版）點卡即到此＝右欄預覽
 function openInReader(file) {
   clickT0 = performance.now();
+  // 使用者自己點卡換了檔：這就不算「開疊順便開的」，離開疊時不該替他關
+  if (pileAutoReader && norm(file.path) !== norm(pileAutoReader.path)) pileAutoReader = null;
   // 提示卡是點擊穿透的（index.html #hint）：它會一直蓋在卡堆中央，
   // 既然開始看卡了就不再需要它——順手收掉，也免得它的 Esc 多佔一次。
   hideTip();
@@ -1106,6 +1214,7 @@ function putBack() {
   doPutBack();
 }
 function doPutBack() {
+  pileAutoReader = null;   // 使用者自己把閱讀欄收了：之後不用再替他收
   if (reader.revise.active()) reader.revise.detach();
   reader.hide();
   stack.readingPath = null;
@@ -1691,6 +1800,17 @@ async function bootUrlPile() {
   const qs = params.toString();
   try { history.replaceState(history.state, '', location.pathname + (qs ? '?' + qs : '') + location.hash); } catch (_) {}
   if (!id) return;
+  // 只有一個檔的疊：等同單檔投影，直接開檔（走 projectOpen → wide 大版面）
+  let files = null;
+  try {
+    const d = await apiJson('/api/pile?id=' + encodeURIComponent(id));
+    files = d.files || [];
+  } catch (_) { /* 取不到就退回 openPile，讓它自己報錯 */ }
+  if (files && files.length === 1) {
+    const opened = await projectOpen(files[0].path).catch(() => false);
+    if (!opened) toast(t('pileNone'));
+    return;
+  }
   const opened = await openPile(id, null).catch(() => false);
   if (!opened) toast(t('pileNone'));
 }
@@ -2297,7 +2417,8 @@ async function projectOpen(path, line) {
   stack.readingPath = f.path;
   stack.poke();
   if (PANEL) reader.setOpen(true);   // 側邊欄：?open=／投影也走整欄閱讀覆層（以前開了個看不見的右欄）
-  else if (mode === 'twocol') setMode('threecol');
+  // 投影是明確意圖：直接給閱讀「2/3」大版面；已經是 wide／full 就原地換檔，不重切
+  else if (mode === 'twocol' || mode === 'threecol') setMode('wide');
   reader.show();
   await reader.open(f);
   if (stale()) return false;
