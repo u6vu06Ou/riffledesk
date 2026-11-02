@@ -12,7 +12,7 @@ import { attachScrubber } from './scrub.js';
 import { initLive } from './live.js';
 import { createUndo, newGroup } from './undo.js';
 import { initMirror } from './mirror.js';
-import { initProject, initProjectSettings, handleProject, handlePile, clickPileToast, setHiddenForTest, restoreRecent, restorePiles, clickNotification, requestUrlOpen } from './project.js';
+import { initProject, initProjectSettings, handleProject, handlePile, clickPileToast, setHiddenForTest, restoreRecent, restorePiles, clickNotification, requestUrlOpen, diffFor, noteDiff } from './project.js';
 import { TabsMode } from './tabs.js';
 import { TAB_X_ZONE, TAB_AI_ZONE, tabBadgeAt } from './thumbs.js';
 import { copyTabForAI } from './tabcopy.js';
@@ -95,10 +95,13 @@ const CHIP_DEFS = [
   { id: 'table', label: t('chipTable'), exts: ['.csv', '.tsv', '.xlsx', '.xls'] },
   { id: 'code', label: t('chipCode'), exts: ['.py', '.js', '.mjs', '.ts', '.tsx', '.jsx', '.css', '.scss', '.less', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.java', '.go', '.rs', '.rb', '.php', '.sh', '.bash', '.bat', '.ps1', '.sql', '.lua', '.vue', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg'] },
   { id: 'image', label: t('chipImage'), exts: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'] },
+  { id: 'video', label: t('chipVideo'), exts: ['.mp4', '.m4v', '.webm', '.ogv', '.mov'] },
   { id: 'readable', label: t('chipReadable'), special: 'readable' },
   { id: 'all', label: 'All', special: 'all' }
 ];
-let chipsOn = ['md'];
+// 全新安裝（localStorage 還沒存過）停在「全部可讀」：第一次打開就看得到所有
+// 能看的檔；使用者動過 chips 之後才照 localStorage 的選取沿用。
+let chipsOn = ['readable'];
 try {
   const saved = JSON.parse(localStorage.getItem('floderChips2') || 'null');
   if (Array.isArray(saved) && saved.length) chipsOn = saved;
@@ -470,6 +473,8 @@ async function fetchFolder(path, off = 0) {
     '&exts=' + encodeURIComponent(effectiveExts()) +
     '&sort=' + encodeURIComponent(stack.sortMode || 'new') +
     (off ? '&off=' + off : ''));
+  // 投影帶來的 +N −M（project.js 的 diffByPath）貼到檔案物件上，卡面標題旁才畫得出來
+  for (const f of data.files || []) { const d = diffFor(f.path); if (d) f.diff = d; }
   if (dirCache.size > 30) dirCache.delete(dirCache.keys().next().value);
   dirCache.set(key, data);
   return data;
@@ -987,6 +992,7 @@ async function openPile(id, row) {
   try { d = await apiJson('/api/pile?id=' + encodeURIComponent(id)); }
   catch (e) { statusEl.textContent = t('readFail', { msg: e.message }); return false; }
   const files = d.files || [];
+  for (const f of files) { if (f.diff) noteDiff(f.path, f.diff); }   // 讓之後逛到同檔的資料夾視圖也有徽章
   // 已經在別疊裡：回程目標不覆蓋，仍是原本那個資料夾
   if (!pileState) pileReturn = convoState ? { kind: 'crow', meta: { ...convoState } }
     : (lockedFolder ? { kind: 'folder', path: lockedFolder } : null);

@@ -1,5 +1,5 @@
 // reader panel: DOM content renderers for all supported kinds.
-import { fmtSize, fmtDate, api, apiJson, KIND_LABEL, kindOf, kindColor, theme } from './util.js';
+import { fmtSize, fmtDate, fmtDateTime, api, apiJson, KIND_LABEL, kindOf, kindColor, theme } from './util.js';
 import { t } from './i18n.js';
 import { getMaxTokens, setMaxTokens } from './copyai.js';
 import { copyTabForAI } from './tabcopy.js';
@@ -132,6 +132,17 @@ export class Reader {
     });
     this.find = new FindBar(this);
     this.btnFind.addEventListener('click', () => this.find.open());
+    // 📋 複製完整路徑：滑鼠框選標題列也行（#readerTitle 已開放 user-select），
+    // 按這顆一鍵複製，貼給 AI 的就是絕對路徑。file:// 分頁的真檔在 localPath；
+    // tab:// 這類虛擬分頁沒有實體路徑，不複製、也不提示失敗。
+    this.btnCopyPath = document.getElementById('btnCopyPath');
+    this.btnCopyPath.addEventListener('click', async () => {
+      if (!this.file) return;
+      const p = this.file.localPath || this.file.path;
+      if (!p || p.startsWith('tab:')) return;
+      try { await navigator.clipboard.writeText(p); this.toast(t('copied', { v: p })); }
+      catch (_) { this.toast(t('opFail', { msg: 'clipboard' })); }
+    });
     this.btnEdit.addEventListener('click', () => this.toggleEdit());
     this.btnSave.addEventListener('click', () => this.editor.save());
     this.btnSaveExit.addEventListener('click', async () => {
@@ -209,7 +220,7 @@ export class Reader {
       this.btnMdPreview.textContent = this.mdPreview ? '✎' : '👁';
       this.btnMdPreview.classList.toggle('on', !this.mdPreview);
     }
-    this.btnFind.disabled = !this.file || this.file.kind === 'image' || this.file.kind === 'pdf' || this.file.kind === 'sheet';
+    this.btnFind.disabled = !this.file || this.file.kind === 'image' || this.file.kind === 'pdf' || this.file.kind === 'sheet' || this.file.kind === 'video';
     // 編輯中：把不相關的鈕收起來，讓檔名與存檔鈕有空間
     document.getElementById('btnMore').hidden = on;
     document.getElementById('btnSize').hidden = on;
@@ -648,7 +659,7 @@ export class Reader {
     // 能直接捲著看的本體（pdf／圖片／表格）吃下近乎整個右欄：本體排最上面、
     // 瀏覽器截圖整張不顯示（跟即時內容重複又佔版面）。文字類維持原序（截圖在前，
     // 快速對照）——那種截圖是唯一的「長相」預覽。
-    const DIRECT = new Set(['pdf', 'image', 'table']);
+    const DIRECT = new Set(['pdf', 'image', 'table', 'video']);
     const direct = DIRECT.has(file.localKind);
     const stat = document.createElement('div'); stat.className = 'tabstat';
     const srcBox = document.createElement('pre'); srcBox.className = 'tabtext';
@@ -764,7 +775,7 @@ export class Reader {
     this.kind.style.color = theme().tabText;
     this.title.textContent = file.name;
     this.title.title = file.path;
-    this.meta.textContent = `${fmtSize(file.size)} · ${fmtDate(file.mtime)}`;
+    this.meta.textContent = `${fmtSize(file.size)} · ${fmtDateTime(file.mtime)}`;
     this.header.classList.toggle('tabhead', file.kind === 'tab');
     this.body.className = '';
     this.body.textContent = '';
@@ -799,6 +810,9 @@ export class Reader {
     try {
       if (file.kind === 'image') {
         el.innerHTML = `<img class="reader-img" src="${url}" alt="">`;
+      } else if (file.kind === 'video') {
+        // 能不能播由瀏覽器的 codec 決定（mp4/webm 幾乎通吃；mkv/avi 不在 KIND 名單內）
+        el.innerHTML = `<video class="reader-video" controls preload="metadata" src="${url}"></video>`;
       } else if (file.kind === 'pdf') {
         // Chrome 內建 PDF 檢視器吃網址 fragment 參數（實測 Chrome 156，見
         // tests/pdf-fragment-manual.mjs）：navpanes=0 預設收掉縮圖側欄、

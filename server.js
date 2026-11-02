@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { URL } = require('node:url');
+const cp = require('node:child_process');
 const convos = require('./convos.js'); // AI-transcript scanner (no-op cost until /api/conv* is hit)
 const { createIndexer } = require('./indexer');
 const { createFileOps, writeAtomic } = require('./fileops');
@@ -104,6 +105,7 @@ const KIND = {
   '.sql': 'code', '.lua': 'code', '.vue': 'code', '.xml': 'code',
   '.svg': 'image', '.png': 'image', '.jpg': 'image', '.jpeg': 'image',
   '.gif': 'image', '.webp': 'image',
+  '.mp4': 'video', '.m4v': 'video', '.webm': 'video', '.ogv': 'video', '.mov': 'video',
   '.pdf': 'pdf'
 };
 const READABLE_EXTS = new Set(Object.keys(KIND));
@@ -116,6 +118,8 @@ const MIME = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.ico': 'image/x-icon',
+  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
+  '.ogv': 'video/ogg', '.mov': 'video/quicktime',
   '.pdf': 'application/pdf',
   '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
   '.log': 'text/plain; charset=utf-8', '.csv': 'text/plain; charset=utf-8',
@@ -941,7 +945,7 @@ function serveFile(req, res, absPath, u) {
   let head = Math.min(Number(u.searchParams.get('head')) || 0, MAX_HEAD_BYTES);
   if (head > 0 && !TEXTLIKE.has(kind)) head = 0;
 
-  const streaming = (kind === 'image' || kind === 'pdf');
+  const streaming = (kind === 'image' || kind === 'pdf' || kind === 'video');
   const cap = kind === 'sheet' ? MAX_SHEET_BYTES : MAX_TEXT_BYTES;
   if (!streaming) {
     const want = head > 0 ? Math.min(head, st.size) : Math.min(cap, st.size);
@@ -960,7 +964,33 @@ function serveFile(req, res, absPath, u) {
     return;
   }
   const type = MIME[ext] || 'application/octet-stream';
-  res.writeHead(200, { 'content-type': type, 'content-length': st.size, 'x-file-kind': kind });
+  // 影片走 <video>：瀏覽器會帶 Range 要片段（拖時間軸、省流量）。不支援 Range 的話
+  // mp4 常常只能從頭順著看、一拉就卡住；至少給單段 bytes 範圍就夠用。
+  if (kind === 'video') {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+    if (m && (m[1] !== '' || m[2] !== '')) {
+      const start = m[1] === '' ? Math.max(0, st.size - parseInt(m[2], 10)) : parseInt(m[1], 10);
+      const end = m[1] !== '' && m[2] !== '' ? Math.min(parseInt(m[2], 10), st.size - 1) : st.size - 1;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= st.size) {
+        res.writeHead(416, { 'content-range': 'bytes */' + st.size });
+        return res.end();
+      }
+      res.writeHead(206, {
+        'content-type': type, 'accept-ranges': 'bytes',
+        'content-range': `bytes ${start}-${end}/${st.size}`,
+        'content-length': end - start + 1, 'x-file-kind': kind
+      });
+      if (req.method === 'HEAD') return res.end();
+      const sr = fs.createReadStream(absPath, { start, end });
+      sr.pipe(res);
+      sr.on('error', () => res.end());
+      return;
+    }
+  }
+  res.writeHead(200, {
+    'content-type': type, 'content-length': st.size, 'x-file-kind': kind,
+    ...(kind === 'video' ? { 'accept-ranges': 'bytes' } : {})
+  });
   if (st.size <= 0) { res.end(); return; }
   const s = fs.createReadStream(absPath, { start: 0, end: st.size - 1 });
   s.pipe(res);
@@ -1360,6 +1390,23 @@ function apiEvents(req, res, u) {
 //    it cannot pass and only ever leaks "did a projected path exist").
 //  - It only reads the file system (stat + SSE broadcast): no writes, no opening of
 //    executables, so the blast radius of a spoofed call is "a card opens".
+// 投影/疊的檔在 git repo 裡時，附上加減行數（工作區 vs HEAD，未送交也算）——
+// AI 改了既有檔案，卡面標題旁就能標 +N −M。失敗原因很多（不在 repo、還沒 commit、
+// 沒裝 git、新檔 untracked、binary）：統一回 null，徽章純裝飾，絕不擋投影。
+function diffStatOf(abs) {
+  try {
+    const opt = { stdio: ['ignore', 'pipe', 'ignore'], timeout: 2500, encoding: 'utf8' };
+    const top = cp.execFileSync('git', ['-C', path.dirname(abs), 'rev-parse', '--show-toplevel'], opt).trim();
+    if (!top) return null;
+    const rel = path.relative(top, abs).split(path.sep).join('/');
+    const out = cp.execFileSync('git', ['-C', top, 'diff', '--numstat', 'HEAD', '--', rel], opt).trim();
+    const m = /^(\d+)\t(\d+)\t/.exec(out);
+    if (!m) return null;
+    const adds = +m[1], dels = +m[2];
+    return (adds || dels) ? { adds, dels } : null;
+  } catch (_) { return null; }
+}
+
 function apiProject(req, res) {
   return (async () => {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' });
@@ -1392,11 +1439,12 @@ function apiProject(req, res) {
     const rawLine = Number(payload.line);
     const line = Number.isFinite(rawLine) && rawLine > 0 ? Math.floor(rawLine) : null;
     const source = typeof payload.source === 'string' ? payload.source.slice(0, 40) : null;
-    const data = { path: abs, line, source, at: Date.now() };
+    const diff = diffStatOf(abs);
+    const data = { path: abs, line, source, at: Date.now(), diff };
     let delivered = 0;
     // 側邊欄（?panel=1 的 SSE 客戶）收不到投影：它沒有閱讀欄，檔案投影要投到完整視窗。
     for (const r of eventClients) { if (panelSse.has(r)) continue; sendSse(r, 'project', data); delivered++; }
-    return sendJson(res, 200, { ok: true, delivered });
+    return sendJson(res, 200, { ok: true, delivered, diff });
   })();
 }
 // ================== end projection ==================
@@ -1513,6 +1561,13 @@ function apiPileGet(res, u) {
   const pile = piles.find(p => p.id === id);
   if (!pile) return sendJson(res, 404, { ok: false, error: 'no such pile' });
   const { files } = pileFiles(pile.paths);
+  // 每檔附 git 加減行數（同 apiProject 的規矩：失敗=null，前 60 檔內才查——
+  // 500 檔全查會 spawn 1000 次 git，疊的本體不值得等那麼久）
+  const DIFF_CAP = 60;
+  let diffChecked = 0;
+  for (const f of files) {
+    f.diff = ++diffChecked <= DIFF_CAP ? diffStatOf(f.path) : null;
+  }
   return sendJson(res, 200, {
     ok: true, id: pile.id, title: pile.title, source: pile.source,
     createdAt: pile.createdAt, files, missing: pile.paths.length - files.length

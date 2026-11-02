@@ -97,7 +97,7 @@ POST /api/project        { "path": "<absolute path>", "line"?: <n>, "source"?: "
 
 Every open tab receives a `project` event over `/api/events` and opens the file (with `line`, it scrolls there and draws a marker line). It **never steals the screen**: a background tab holds the file back, raises one system notification per burst (several within 3 s merge into "the AI opened N files"), and opens the file when you click the notification or come back to the tab. The ⚙ settings carry a projection block: notifications on/off, an independent chime on/off (synthesized, throttled to one beep per 10 s), always-jump-to-the-front, and the permission button.
 
-Guards: the usual loopback `Host` check plus the `/api/` cross-site `Sec-Fetch-Site` guard apply, so a web page on another site still cannot call it. Because the CLI is not a browser it sends no `Origin` — the route accepts a request when *either* the same-origin `Origin` rule holds (a tab using `fetch`) *or* the caller presents `X-RiffleDesk-CLI: 1` **and** no `Origin`; a browser's cross-site POST always carries an `Origin`, so it cannot dress up as the CLI. The path must exist, be a file, and pass `isAllowed`. Response `{ ok: true, delivered: <tabs reached> }` (`delivered: 0` → start a browser yourself), 4xx with `{ ok: false, error }` otherwise. The route only reads the file system: a spoofed call can at worst open a card.
+Guards: the usual loopback `Host` check plus the `/api/` cross-site `Sec-Fetch-Site` guard apply, so a web page on another site still cannot call it. Because the CLI is not a browser it sends no `Origin` — the route accepts a request when *either* the same-origin `Origin` rule holds (a tab using `fetch`) *or* the caller presents `X-RiffleDesk-CLI: 1` **and** no `Origin`; a browser's cross-site POST always carries an `Origin`, so it cannot dress up as the CLI. The path must exist, be a file, and pass `isAllowed`. Response `{ ok: true, delivered: <tabs reached>, diff }` (`delivered: 0` → start a browser yourself), 4xx with `{ ok: false, error }` otherwise. `diff` is `{ adds, dels }` from `git diff --numstat HEAD` when the file is tracked and locally modified in a repository — the card-title "+N −M" badge — and `null` otherwise (no repo, clean, untracked, binary, or no git); it is decoration and never blocks a projection. The route only reads the file system: a spoofed call can at worst open a card.
 
 ## Piles (an AI hands you a shortlist)
 
@@ -105,7 +105,8 @@ Instead of opening one file, an agent can hand over a whole set — the search h
 
 ```
 POST /api/pile           { "paths": ["<abs>", …], "title"?: "…", "source"?: "claude-code" }
-GET  /api/pile?id=<id>   → { ok, id, title, source, createdAt, files: [{ name, path, size, mtime, ext, kind }], missing }
+GET  /api/pile?id=<id>   → { ok, id, title, source, createdAt, files: [{ name, path, size, mtime, ext, kind, diff }], missing }
+                             (diff: same rule as /api/project, only computed for the first 60 files)
 GET  /api/piles          → { ok, piles: [{ id, title, count, source, createdAt }] }   newest first
 ```
 
@@ -142,7 +143,7 @@ Reads are free-for-scope by design; writes are guarded. Aside from the pinned li
 - 寫入端點（一律 `POST`＋JSON body＋必須帶本站 `Origin` 標頭，否則 403）：`POST /api/reveal {path}`（在檔案總管中選取）、`POST /api/open {path}`（只放行文件／資料型副檔名，腳本與執行檔一律 403）、`POST /api/rename {path, newName[, group]}`（純檔名驗證、Windows 保留名檢查、允許純大小寫改名）、`POST /api/trash {path[, group]}`（進資源回收筒，絕不硬刪；測試可用 `RIFFLEDESK_TRASH_DRYRUN=1` 只驗證不動檔）
 - `POST /api/undo {}` → Ctrl＋Z 復原上一個改名／刪除（記憶體留存最近 20 步，重開機即失效；改名＝改回來（新名還在、舊名沒被佔才動；純大小寫改名可還原原始拼法）；刪除＝從 Windows 回收筒按「原始路徑＋最近刪除時間」找回並校驗大小，**絕不覆蓋現有檔案**——回收筒還原只支援 Windows，macOS/Linux 的刪除不會進復原堆疊；帶相同 `group` 的批次操作算一步（30 分鐘內、每組至多 500 項）。回 `{ok, op, restored, failed, paths}`，沒東西可復原 → 404、全部失敗 → 409。
 - `GET /api/secretscan?path=…` → `{ok, secret, matches:[{line, kind, masked}]}`：偵測文字檔疑似密碼／金鑰（規則在 `secrets.js`：sk-/sk-ant-、AKIA、ghp_/gho_/ghs_/github_pat_、AIza、xox、私鑰區塊、password/api_key；xxx、<your-key>、example、changeme 這類範例值不算）。**只掃前 64 KB，回傳值一律遮罩到只見前 4 字元、永不記錄明文**。索引爬蟲會把結果存進 `files.secret`（schema v7，僅 `ALTER TABLE` 加欄、不重建舊索引），`/api/list` 檔案項命中時帶 `secret: true`；索引還沒掃到的檔走即時掃描（只掃 ≤64 KB 文字檔、依 path+size+mtime 快取）。設定：`secretScan`（預設開）＋`secretScanSkipDirs`（目錄名清單，命中任一路徑段就跳過掃描）。介面上旗標卡有 ⚠ 標章，閱讀區出現「這個檔案可能含有密碼或金鑰，分享前請檢查」警告列（中英雙語，`i18n.js`）。
-- `GET /api/file?path=…[&head=N]` → 檔案內容（`head=N` 上限 65536 只串前 N bytes 給縮圖用；文字截斷 512KB；圖片／pdf 串流正確 content-type；xlsx 回原始位元組給前端 SheetJS 解析）
+- `GET /api/file?path=…[&head=N]` → 檔案內容（`head=N` 上限 65536 只串前 N bytes 給縮圖用；文字截斷 512KB；圖片／pdf 串流正確 content-type；影片 mp4/m4v/webm/ogv/mov 串流且支援單段 `Range: bytes=`（206／416），拖時間軸靠它；xlsx 回原始位元組給前端 SheetJS 解析）
 - `POST /api/save {path, content, baseMtime, baseSize}` → 從閱讀區把編輯內容寫回（只收 UTF-8、≤5MB、文字類）。原子寫入（同資料夾 `.rdtmp-*` 暫存＋改名，Windows EBUSY 短重試），保留磁碟原檔的 BOM 與主要換行（CRLF 檔仍是 CRLF）。`baseMtime`／`baseSize` 是編輯起點的版本：磁碟上的檔已經變了（例如 AI 剛寫入）就回 `409 {error:'conflict', content, mtime, size}` 且**一個字都不寫**，由前端跳差異對話框；成功回 `{ok, size, mtime, bom, crlf, undoable}`，舊版進復原堆疊（>2MB 不存）。
 - `POST /api/pin` body `{path, pinned}` → 更新釘選
 - `POST /api/pile {paths:[…], title?, source?}` → 把一組檔交成一疊（`{id, title, paths, source, createdAt}`，記憶體＋`config.json` 旁的 `piles.json`，只留最近 20 疊）。去重複、不合格路徑丟掉並列在 `dropped`（全不合格 400）、超過 500 檔 400、空標題用第一個檔名。防護同 `/api/project`（同源 `Origin` 或無 `Origin` ＋ `X-RiffleDesk-CLI: 1`），只 stat 不寫檔。前端收到 `pile` SSE 事件只跳提示／通知**不搶畫面**，左欄列出最近的疊，`/?pile=<id>` 直接開。`GET /api/pile?id=…` 回 `{ok, id, title, files:[同 list 欄位], missing}`；`GET /api/piles` 回清單（新→舊）。

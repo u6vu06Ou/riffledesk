@@ -1,5 +1,7 @@
 // tests/project.test.mjs — POST /api/project (CLI push-to-open) tests.
-// In-process (imports server.js so the SSE hub can be observed directly). Port 5189.
+// In-process (imports server.js so the SSE hub can be observed directly). Port 5193
+// (was 5189: raw.test.mjs uses the same port and wins the race once this file's module
+// setup — git fixture init — delays the bind).
 // Covers: 404 for a missing file, 403 for a path outside the allowed scopes, 403 for
 // a cross-origin browser request, `delivered` counts, and an actual project event on a
 // live SSE connection. Usage: node --test tests/project.test.mjs
@@ -9,10 +11,11 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import cp from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PORT = 5189;
+const PORT = 5193;
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-project-'));
 const FIX = path.join(TMP, 'fixture');
@@ -25,6 +28,21 @@ const OUTSIDE_FILE = path.join(OUTSIDE, 'out.md');
 fs.writeFileSync(OUTSIDE_FILE, 'outside\n');
 const CONFIG_PATH = path.join(TMP, 'config.json');
 fs.writeFileSync(CONFIG_PATH, JSON.stringify({ roots: [FIX], pinned: [], convoRoots: [] }, null, 2));
+
+// ---- git 版控夾具：被改過的 tracked 檔，投影時要帶 {adds,dels}（工作區 vs HEAD）----
+let GIT_OK = true;
+const REPO = path.join(FIX, 'repo');
+const TRACKED = path.join(REPO, 'mod.md');
+try {
+  fs.mkdirSync(REPO, { recursive: true });
+  fs.writeFileSync(TRACKED, 'a\nb\nc\n');
+  const g = (...a) => cp.execFileSync('git', ['-C', REPO, ...a], { stdio: ['ignore', 'pipe', 'pipe'] });
+  g('init', '-q');
+  g('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.');
+  g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init');
+  // b→X（+1 −1）再加 d、e 兩行（+2 −0）＝ +3 −1
+  fs.writeFileSync(TRACKED, 'a\nX\nc\nd\ne\n');
+} catch (_) { GIT_OK = false; }
 
 process.env.FLODER_CONFIG = CONFIG_PATH;
 process.env.RIFFLEDESK_INDEX = 'off';
@@ -149,7 +167,7 @@ test('a directory is not a file → 400', async () => {
 test('no tab connected → delivered 0', async () => {
   const r = await post({ path: TARGET });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { ok: true, delivered: 0 });
+  assert.deepEqual(r.body, { ok: true, delivered: 0, diff: null });   // FIX 不在 git repo 裡
 });
 
 test('one SSE tab connected → delivered 1 and a project event carrying the path', async (t) => {
@@ -171,4 +189,26 @@ test('a nonsense line value becomes line null', async (t) => {
   await post({ path: TARGET, line: 'abc' });
   const ev = await waitEvent(st, 'project', 3000);
   assert.equal(ev.data.line, null);
+});
+
+test('git repo 裡被改過的檔 → body 與 SSE 事件都帶 {adds,dels}', async (t) => {
+  if (!GIT_OK) return t.skip('git not available');
+  const st = await openEvents();
+  t.after(() => closeEvents(st));
+  const r = await post({ path: TRACKED });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.diff, { adds: 3, dels: 1 });
+  const ev = await waitEvent(st, 'project', 3000);
+  assert.deepEqual(ev.data.diff, { adds: 3, dels: 1 });
+});
+
+test('在 repo 裡但沒改過的檔 → diff 為 null（徽章不外掛）', async (t) => {
+  if (!GIT_OK) return t.skip('git not available');
+  const CLEAN = path.join(REPO, 'clean.md');
+  fs.writeFileSync(CLEAN, 'same\n');
+  cp.execFileSync('git', ['-C', REPO, '-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  cp.execFileSync('git', ['-C', REPO, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'add clean'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = await post({ path: CLEAN });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.diff, null);
 });

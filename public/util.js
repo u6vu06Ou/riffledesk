@@ -18,6 +18,13 @@ export function fmtDate(ms) {
   const p = x => String(x).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+// 卡面／閱讀器要看的「AI 到底幾點幾分動了它」。永遠用本機時區（Windows／Mac 同一份程式碼，
+// 各看各的本地時間），刻意不做相對時間（「3 分鐘前」下一秒就過期，還得定時重畫卡面）。
+export function fmtDateTime(ms) {
+  const d = new Date(ms);
+  const p = x => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 export function clamp(v, a, b) { return Math.min(b, Math.max(a, v)); }
 export function damp(cur, target, rate, dt) { // exponential damping, frame-rate independent
   return cur + (target - cur) * (1 - Math.exp(-rate * dt));
@@ -94,11 +101,11 @@ export function saveParams() {
 export const KIND_COLOR = {
   markdown: '#2f6fed', text: '#6b7280', html: '#e34f26', json: '#8e44ad',
   table: '#1b9e77', sheet: '#217346', code: '#b58900', image: '#d33682', pdf: '#c0392b',
-  binary: '#4d5a68', tab: '#5b5ea6'
+  video: '#0c8599', binary: '#4d5a68', tab: '#5b5ea6'
 };
 export const KIND_LABEL = {
   markdown: 'MD', text: 'TXT', html: 'HTML', json: 'JSON', table: 'CSV',
-  sheet: 'XLS', code: 'CODE', image: 'IMG', pdf: 'PDF', binary: 'BIN', tab: 'TAB'
+  sheet: 'XLS', code: 'CODE', image: 'IMG', pdf: 'PDF', video: 'VID', binary: 'BIN', tab: 'TAB'
 };
 export function kindOf(file) { return file.kind || 'binary'; }
 
@@ -116,7 +123,7 @@ export const THEMES = {
     // 檔名列（表頭）：紙色主題用「墨色系」——低彩度、像書脊標籤，每種檔案一個色相、明度一致
     tabText: '#fbf7ee', reading: '#c0782e',   // 正在閱讀的卡：琥珀色外框（紙色上醒目但不刺眼）
     tabs: { markdown: '#3f5d7a', text: '#6e665a', html: '#a65a32', json: '#6b4f7f', table: '#4c7559',
-      sheet: '#3d6b4e', code: '#86691f', image: '#9c4a60', pdf: '#9a3f35', binary: '#5f5a52', tab: '#565a86' }
+      sheet: '#3d6b4e', code: '#86691f', image: '#9c4a60', pdf: '#9a3f35', video: '#256874', binary: '#5f5a52', tab: '#565a86' }
   },
   dark: {
     scene: 0x121417, ground: 0x171a1f,
@@ -127,7 +134,7 @@ export const THEMES = {
     // 暗色主題的表頭：同一組色相但更深更沉（像夜間模式的書籤），不搶內文、白字對比 ≥ 5:1
     tabText: '#efe9dd', reading: '#e0a24a',
     tabs: { markdown: '#2f4a66', text: '#4c5159', html: '#83452a', json: '#553f69', table: '#355a45',
-      sheet: '#2c553d', code: '#6b5418', image: '#7a3a4c', pdf: '#7a332c', binary: '#454b54', tab: '#3c4066' }
+      sheet: '#2c553d', code: '#6b5418', image: '#7a3a4c', pdf: '#7a332c', video: '#1d525c', binary: '#454b54', tab: '#3c4066' }
   }
 };
 let themeName = (() => {

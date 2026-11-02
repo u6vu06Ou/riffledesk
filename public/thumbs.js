@@ -1,6 +1,6 @@
 // thumbnail painters (pure canvas, no three.js) + frame-budgeted build queue.
 import { t } from './i18n.js';
-import { fmtSize, fmtDate, KIND_LABEL, kindOf, theme, themeNow, themeGen, kindColor } from './util.js';
+import { fmtSize, fmtDate, fmtDateTime, KIND_LABEL, kindOf, theme, themeNow, themeGen, kindColor } from './util.js';
 import { fontStack } from './fonts.js';
 import { thumbCodeColors, tokenizeLine } from './codetheme.js';
 import { pathExtOf } from './fileurl.js';
@@ -94,14 +94,37 @@ function drawTab(ctx, W, file, scale) {
   const isTabCard = !!(file.tab && !file.tab.note);
   const badgeU = isTabCard && panelAiBadge() ? TAB_AI_ZONE.u0 : TAB_X_ZONE.u0;
   const xGap = isTabCard ? Math.round(W * (1 - badgeU)) + Math.round(8 * scale) : 0;
-  ctx.fillText(ellipsis(ctx, file.name, W - Math.round(28 * scale) - (badge ? Math.round(80 * scale) : 0) - xGap), Math.round(14 * scale), Math.round(46 * scale));
+  // git 加減行數徽章（檔案卡限定）：投影／疊帶來的 file.diff，跟在檔名後面、字小一級，
+  // 照 GitHub 慣例 加=綠、減=紅。分頁卡沒有這種資料。
+  const diffSegs = (file.diff && !isTabCard)
+    ? [['+' + file.diff.adds, '#3fb950'], ['−' + file.diff.dels, '#f85149']]
+    : null;
+  let diffW = 0;
+  if (diffSegs) {
+    ctx.font = `600 ${Math.round(19 * scale)}px ${fontStack()}`;
+    diffW = Math.round(12 * scale) + diffSegs.reduce((w, [s], i) => w + ctx.measureText(s).width + (i ? Math.round(8 * scale) : 0), 0);
+    ctx.font = `bold ${Math.round(30 * scale)}px ${fontStack()}`;
+  }
+  const nmX = Math.round(14 * scale), nmY = Math.round(46 * scale);
+  const name = ellipsis(ctx, file.name, W - Math.round(28 * scale) - (badge ? Math.round(80 * scale) : 0) - xGap - diffW);
+  ctx.fillText(name, nmX, nmY);
+  if (diffSegs) {
+    let dx = nmX + ctx.measureText(name).width + Math.round(12 * scale);
+    ctx.font = `600 ${Math.round(19 * scale)}px ${fontStack()}`;
+    for (let i = 0; i < diffSegs.length; i++) {
+      ctx.fillStyle = diffSegs[i][1];
+      ctx.fillText(diffSegs[i][0], dx, nmY - Math.round(2 * scale));
+      dx += ctx.measureText(diffSegs[i][0]).width + Math.round(8 * scale);
+    }
+    ctx.fillStyle = theme().tabText;
+  }
   ctx.font = `${Math.round(19 * scale)}px ${fontStack()}`;
   ctx.globalAlpha = 0.92;
   // 分頁卡畫「網域 · 最後開啟時間」：0 B 這種檔案大小對分頁沒意義
   ctx.fillText(
     (file.tab && !file.tab.note)
       ? ellipsis(ctx, tabMetaText(file), W - Math.round(28 * scale) - xGap)
-      : `${fmtSize(file.size)} · ${fmtDate(file.mtime)} · ${KIND_LABEL[kindOf(file)] || file.ext}`,
+      : `${fmtSize(file.size)} · ${fmtDateTime(file.mtime)} · ${KIND_LABEL[kindOf(file)] || file.ext}`,
     Math.round(14 * scale), Math.round(72 * scale));
   ctx.globalAlpha = 1;
   return tabH;
@@ -501,6 +524,20 @@ function paintExplainBody(ctx, W, H, tabH, icon, title, body) {
   ctx.textAlign = 'left';
 }
 
+// 影片卡面：不抓影格畫縮圖（拿前幾格＝整段開頭都下來了，違反速度鐵律）——
+// 大圖示＋一句提示；點開後右欄才是真的 <video> 播放。
+function paintVideoBody(ctx, W, H, tabH) {
+  const iconPx = 96;
+  const cy = tabH + Math.round((H - tabH) * 0.30);
+  ctx.font = `${iconPx}px ${fontStack()}`;
+  ctx.fillStyle = theme().dim;
+  ctx.textAlign = 'center';
+  ctx.fillText('🎬', W / 2, cy + iconPx * 0.5);
+  ctx.font = `26px ${fontStack()}`;
+  ctx.fillText(t('thumbVideoHint'), W / 2, cy + iconPx + 28);
+  ctx.textAlign = 'left';
+}
+
 // file:// 分頁：直接把本機檔的內容畫在卡身上（跟檔案模式同一套畫法）。
 // 讀不到（檔案沒了／不在允許範圍／類型不認得）就丟錯，呼叫端退回說明卡面。
 async function paintLocalBody(ctx, W, H, file, tabH) {
@@ -508,6 +545,7 @@ async function paintLocalBody(ctx, W, H, file, tabH) {
   const url = '/api/file?path=' + encodeURIComponent(file.localPath);
   if (kind === 'image') { const img = await loadBitmap(url); paintImage(ctx, W, H, img, tabH); closeBitmap(img); return; }
   if (kind === 'pdf') return;   // PDF 卡只留檔名列（跟檔案模式一致）
+  if (kind === 'video') { paintVideoBody(ctx, W, H, tabH); return; }
   if (kind === 'sheet') {
     const buf = await (await fetch(url).then(r => { if (!r.ok) throw new Error('http ' + r.status); return r; })).arrayBuffer();
     if (typeof XLSX === 'undefined') throw new Error('xlsx lib missing');
@@ -707,6 +745,8 @@ export async function buildThumbCanvas(file) {
     } else if (file.kind === 'pdf') {
       // 刻意為空（不可 fall through）：原 90px PDF 浮水印已移除——檔名已在檔名列，
       // 浮水印會蓋內文；PDF 卡只留頁籤，不 fetch 內容。
+    } else if (file.kind === 'video') {
+      paintVideoBody(ctx, W, H, tabH);
     } else {
       const r = await fetch(url + '&head=' + HEAD_BYTES);
       if (!r.ok) throw new Error('http ' + r.status);

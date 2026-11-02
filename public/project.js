@@ -36,6 +36,19 @@ let frontOn = lsGet(FRONT_KEY, false);
 
 let deps = null;                 // { openPath(path, line), openPile(pile) } — main.js owns the UI work
 let pending = [];                // background-held projections (newest last)
+
+// 投影/疊帶來的 git 加減行數：卡面標題旁畫 +N −M。記憶體內（重整即消）、
+// FIFO 100 筆——它是「剛被推上來」的短暫裝飾，不是歷史查詢功能。
+const DIFF_MAX = 100;
+const diffByPath = new Map();   // path -> { adds, dels }
+export function diffFor(p) { return diffByPath.get(p) || null; }
+export function noteDiff(p, d) {
+  if (!p || !d || typeof d.adds !== 'number' || typeof d.dels !== 'number') return;
+  if (!d.adds && !d.dels) return;
+  diffByPath.delete(p);
+  diffByPath.set(p, { adds: d.adds, dels: d.dels });
+  if (diffByPath.size > DIFF_MAX) diffByPath.delete(diffByPath.keys().next().value);
+}
 let mergeTimer = null;
 let lastBeep = 0;
 let audioCtx = null;
@@ -375,6 +388,7 @@ export function handleProject(data) {
     source: data.source || null,
     at: data.at || Date.now()
   };
+  if (data.diff) noteDiff(rec.path, data.diff);
   pushRecent(rec);
   if (pageVisible()) {
     pending = [];

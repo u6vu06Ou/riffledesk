@@ -248,7 +248,7 @@ async function main() {
 
     // ============ S1：1920×1030 / size3 —— 取景 + 真實點擊每張卡 ============
     await lockFolderIdle(P.size3);
-    ok((await page.evaluate(() => __dbg.chipsOn())).join() === 'md', 'chips-default-md');
+    ok((await page.evaluate(() => __dbg.chipsOn())).join() === 'readable', 'chips-default-readable');
     await assertFraming(page, 'f-1920-3files');
     await assertHoverPart('f-1920-3files');
     await shot('v4-01-1920-3files');
@@ -957,7 +957,7 @@ async function main() {
           { mode: mode9, viewPx: Math.round(fr2.view * 1366), readerPx: Math.round(fr2.reader * 1366) });
 
         // ↺ 還原使用者上次比例（剛拖到最小的那個，已存 localStorage）
-        await pg.click('#btnThree');
+        await pg.evaluate(() => __dbg.setMode('threecol')); // btnThree 已廢（1a50c24 單鈕輪切），等價動作
         await pg.waitForFunction(() => __dbg.mode() === 'threecol', null, 6000);
         await sleep(700);
         const fr2b = await pg.evaluate(() => __dbg.fracs());
@@ -1027,7 +1027,7 @@ async function main() {
           's9w-splitter2-hidden-wide');
         await shot('v6-3440-drag-to-wide', pg);
         // ↺ 回三欄（使用者上次比例）
-        await pg.click('#btnThree');
+        await pg.evaluate(() => __dbg.setMode('threecol')); // btnThree 已廢（1a50c24 單鈕輪切），等價動作
         await pg.waitForFunction(() => __dbg.mode() === 'threecol', null, 6000);
         await sleep(700);
         ok((await pg.evaluate(() => __dbg.fracs())).view > 0.001, 's9w-restore-back-threecol');

@@ -19,6 +19,7 @@ const EXT_KIND = {
   '.sql': 'code', '.lua': 'code', '.vue': 'code', '.xml': 'code',
   '.svg': 'image', '.png': 'image', '.jpg': 'image', '.jpeg': 'image',
   '.gif': 'image', '.webp': 'image',
+  '.mp4': 'video', '.m4v': 'video', '.webm': 'video', '.ogv': 'video', '.mov': 'video',
   '.pdf': 'pdf'
 };
 export function extToKind(ext) { return EXT_KIND[String(ext || '').toLowerCase()] || null; }

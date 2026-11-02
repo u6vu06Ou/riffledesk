@@ -35,6 +35,7 @@ write('.hidden/secret.md', 'magicword must NOT be found from a dot-dir\n');
 write('node_modules/pkg/dep.md', 'magicword must NOT be found from node_modules\n');
 write('CaseDir/upper.md', 'case sensitivity test content\n');
 fs.writeFileSync(path.join(FIX, 'img.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+fs.writeFileSync(path.join(FIX, 'clip.mp4'), Buffer.alloc(64, 7));   // 假影片：只測 HTTP 行為，不解碼
 
 const CONFIG_PATH = path.join(TMP, 'config.json');
 fs.writeFileSync(CONFIG_PATH, JSON.stringify({ roots: [FIX], pinned: [] }, null, 2));
@@ -67,6 +68,12 @@ async function getJson(p) {
   const res = await fetch(BASE + p);
   const body = await res.json();
   return { status: res.status, body };
+}
+
+async function getRaw(p, headers = {}) {
+  const res = await fetch(BASE + p, { headers });
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { status: res.status, headers: res.headers, body: buf };
 }
 
 function waitPortFree(port) {
@@ -189,6 +196,28 @@ test('api suite', async (t) => {
       // sorted by mtime desc
       const mtimes = body.files.map(f => f.mtime);
       assert.deepEqual([...mtimes].sort((a, b) => b - a), mtimes);
+    });
+
+    await t.test('video: /api/file streams mp4 with kind/accept-ranges', async () => {
+      const r = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'clip.mp4'))}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.headers.get('content-type'), 'video/mp4');
+      assert.equal(r.headers.get('x-file-kind'), 'video');
+      assert.equal(r.headers.get('accept-ranges'), 'bytes');
+      assert.equal(r.body.length, 64);
+    });
+
+    await t.test('video: Range bytes=0-9 → 206 partial, suffix range, 416 overflow', async () => {
+      const r = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'clip.mp4'))}`, { Range: 'bytes=0-9' });
+      assert.equal(r.status, 206);
+      assert.equal(r.headers.get('content-range'), 'bytes 0-9/64');
+      assert.equal(r.body.length, 10);
+      const tail = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'clip.mp4'))}`, { Range: 'bytes=-8' });
+      assert.equal(tail.status, 206);
+      assert.equal(tail.headers.get('content-range'), 'bytes 56-63/64');
+      assert.equal(tail.body.length, 8);
+      const bad = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'clip.mp4'))}`, { Range: 'bytes=100-200' });
+      assert.equal(bad.status, 416);
     });
 
     await t.test('search: case-insensitive', async () => {
