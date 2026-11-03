@@ -26,7 +26,7 @@ RiffleDesk is the missing surface for that exchange:
 
 <p align="center"><img src="docs/media/02-stack.png" alt="The card stack mid-scroll over a mixed folder" width="900"></p>
 
-**Reading.** Markdown renders (sanitised), HTML renders in a sandboxed iframe or as highlighted source, JSON prettifies, CSV/TSV/XLSX become tables, images and PDFs open in place. Highlighting and line numbers for code, eight colour themes, a wrap toggle, and find-in-reader with next/previous/count-all.
+**Reading.** Markdown renders (sanitised), HTML renders in a sandboxed iframe or as highlighted source, JSON prettifies, CSV/TSV/XLSX become tables, PPTX decks become scaled slide cards (text boxes and pictures at their slide positions), images and PDFs open in place. Highlighting and line numbers for code, eight colour themes, a wrap toggle, and find-in-reader with next/previous/count-all.
 
 <p align="center"><img src="docs/media/03-reader-md.png" alt="Reading a markdown report in the reader panel" width="900"></p>
 
@@ -62,7 +62,11 @@ Node ≥ 22.5 (the index needs `node:sqlite`; older Node runs, with live-scan se
 
 It browses by default and only writes when you ask it to: save, rename, trash — every write is an explicit click, and trash is recoverable.
 
-The app binds `127.0.0.1` only and opens at <http://127.0.0.1:5177/>. Change the port with `PORT`, a port argument, or `riffledesk --port 5180` (the launcher also steps up to +10 when busy; `--no-open` skips the browser).
+The app binds `127.0.0.1` only and opens at <http://127.0.0.1:5177/>. Change the port with `PORT`, a port argument, or `riffledesk --port 5180`; `--no-open` skips the browser. Launching again reuses the server on that port.
+
+The launcher exits after starting a windowless background server. Closing its terminal or coding assistant leaves RiffleDesk running. In **Settings → RiffleDesk**, see the version, restart, or stop the server. These actions affect all tabs connected to that server. After stopping, run RiffleDesk again to resume. No login service or automatic startup is installed.
+
+From a shell: `riffledesk status`, `riffledesk restart`, and `riffledesk stop` (each accepts `--port N`). Updating the npm package does not replace an already running server: restart it afterward. A server older than 0.3.0 must be stopped manually once. Developers can use `npm run dev` or `riffledesk --foreground` to keep the server attached to a terminal with Ctrl+C to stop. On Windows, use `riffledesk.cmd` in Git Bash if antivirus blocks the POSIX shim.
 
 ## Command line for AI agents
 
@@ -113,7 +117,7 @@ The full audit — every checked location, format, source link and confidence �
 - **A cloud assistant that only sees screenshots cannot reach the server.** The CLI works for an agent with a shell on the same machine. For a chat assistant running elsewhere, this is a browser you drive yourself, not a remote endpoint.
 - Read-only by default; the four write endpoints (reveal, open, rename, trash) plus save and pin are the only things that touch disk, and trash never hard-deletes.
 - Text editing is UTF-8 only, ≤ 5 MB, text kinds only. Non-UTF-8 (Big5, UTF-16), binaries and XLSX are view-only. The undo stack lives in memory, 20 steps, gone on restart. Trash-undo is Windows-only.
-- XLSX shows the first sheet; PDF is an embed only.
+- XLSX shows the first sheet; PDF is an embed only. PPTX rendering is text-and-picture level only (no masters/layouts, SmartArt or animations; old binary .ppt opens in the system app instead), and full-text indexing does not reach inside PPTX files — their names are still searchable.
 - The find box inside a *running* HTML page cannot reach its DOM — switch to the safe preview or the source.
 - Very large folders (System32-scale) return megabytes of JSON on first listing; a directory cache softens repeats.
 - The front-end search box filters file names in the current folder; recursive full-text search is the `/api/search` path.

@@ -17,6 +17,9 @@ const { scanText, maskValue, looksBinary: looksSecretBinary, anySegmentSkipped }
 const HOST = '127.0.0.1';
 const ROOT_DIR = __dirname;
 const PKG = require('./package.json');
+const SERVICE_INSTANCE = crypto.randomUUID();
+const SERVICE_STARTED = new Date().toISOString();
+let serviceClosing = false;
 const IS_WIN = process.platform === 'win32';
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 const envPick = (a, b) => process.env[a] || process.env[b]; // RIFFLEDESK_* preferred, FLODER_* kept for compatibility
@@ -96,6 +99,7 @@ const KIND = {
   '.json': 'json',
   '.csv': 'table', '.tsv': 'table',
   '.xlsx': 'sheet', '.xls': 'sheet',
+  '.pptx': 'slides',
   '.yaml': 'code', '.yml': 'code', '.toml': 'code', '.ini': 'code', '.cfg': 'code',
   '.py': 'code', '.js': 'code', '.mjs': 'code', '.ts': 'code', '.tsx': 'code',
   '.jsx': 'code', '.css': 'code', '.scss': 'code', '.less': 'code',
@@ -121,6 +125,7 @@ const MIME = {
   '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
   '.ogv': 'video/ogg', '.mov': 'video/quicktime',
   '.pdf': 'application/pdf',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
   '.log': 'text/plain; charset=utf-8', '.csv': 'text/plain; charset=utf-8',
   '.tsv': 'text/plain; charset=utf-8'
@@ -946,11 +951,15 @@ function serveFile(req, res, absPath, u) {
   if (head > 0 && !TEXTLIKE.has(kind)) head = 0;
 
   const streaming = (kind === 'image' || kind === 'pdf' || kind === 'video');
-  const cap = kind === 'sheet' ? MAX_SHEET_BYTES : MAX_TEXT_BYTES;
+  const cap = (kind === 'sheet' || kind === 'slides') ? MAX_SHEET_BYTES : MAX_TEXT_BYTES;
+  // ZIP 檔（xlsx/pptx）截斷了等於整份報廢——寧可直接拒絕，別送回一份打不開的碎片
+  if (cap === MAX_SHEET_BYTES && st.size > cap) {
+    return sendJson(res, 413, { ok: false, error: 'file too large' });
+  }
   if (!streaming) {
     const want = head > 0 ? Math.min(head, st.size) : Math.min(cap, st.size);
     res.writeHead(200, {
-      'content-type': 'text/plain; charset=utf-8',
+      'content-type': kind === 'slides' ? (MIME[ext] || 'application/octet-stream') : 'text/plain; charset=utf-8',
       'content-length': want,
       'x-file-kind': kind,
       'x-truncated': st.size > want ? '1' : '0'
@@ -1395,7 +1404,10 @@ function apiEvents(req, res, u) {
 // 沒裝 git、新檔 untracked、binary）：統一回 null，徽章純裝飾，絕不擋投影。
 function diffStatOf(abs) {
   try {
-    const opt = { stdio: ['ignore', 'pipe', 'ignore'], timeout: 2500, encoding: 'utf8' };
+    // windowsHide: the server itself is launched hidden (bin/riffledesk.js), so every
+    // git child we spawn without it gets a brand-new console window — one visible
+    // flicker per projected/piled file on Windows.
+    const opt = { stdio: ['ignore', 'pipe', 'ignore'], timeout: 2500, encoding: 'utf8', windowsHide: true };
     const top = cp.execFileSync('git', ['-C', path.dirname(abs), 'rev-parse', '--show-toplevel'], opt).trim();
     if (!top) return null;
     const rel = path.relative(top, abs).split(path.sep).join('/');
@@ -2037,7 +2049,7 @@ function apiTabsResult(req, res) {
 // ================== end browser tabs bridge ==================
 
 // ---------- request handler ----------
-async function requestHandler(req, res) {
+async function requestHandler(req, res, server) {
   try {
     if (!hostAllowed(req)) { res.writeHead(421); return res.end('misdirected request'); }
 
@@ -2087,6 +2099,35 @@ async function requestHandler(req, res) {
       if (qp) u.searchParams.set('path', demoReal(qp));
     }
     const p = u.pathname;
+
+    if (p === '/api/service') {
+      if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'GET only' });
+      return sendJson(res, 200, { ok: true, name: PKG.name, version: PKG.version,
+        pid: process.pid, instanceId: SERVICE_INSTANCE, startedAt: SERVICE_STARTED });
+    }
+    if (p === '/api/service/stop' || p === '/api/service/restart') {
+      if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' });
+      const cli = !req.headers.origin && req.headers['x-riffledesk-cli'] === '1';
+      if (!cli && !writeOriginOk(req)) return sendJson(res, 403, { ok: false, error: 'same-origin or CLI required' });
+      if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
+        return sendJson(res, 415, { ok: false, error: 'json only' });
+      }
+      let payload;
+      try { payload = JSON.parse(await readBody(req, 1024)); }
+      catch (_) { return sendJson(res, 400, { ok: false, error: 'invalid request body' }); }
+      if (payload?.instanceId !== SERVICE_INSTANCE) return sendJson(res, 409, { ok: false, error: 'server changed; refresh and try again' });
+      if (serviceClosing) return sendJson(res, 409, { ok: false, error: 'server is already stopping' });
+      serviceClosing = true;
+      const restart = p.endsWith('/restart');
+      const port = req.socket.localPort;
+      res.once('finish', () => {
+        if (restart) require('./bin/background').startBackground(port, process.pid);
+        server.close();
+        // SSE clients and index workers otherwise keep the old process alive.
+        setTimeout(() => { server.closeAllConnections(); process.exit(0); }, 200);
+      });
+      return sendJson(res, 200, { ok: true, action: restart ? 'restart' : 'stop' });
+    }
 
     if (p === '/api/drives') {
       return sendJson(res, 200, {
@@ -2357,7 +2398,7 @@ function start(port) {
   if (!fileOps) {
     fileOps = createFileOps({ isAllowed, norm, indexer, KIND, invalidateDir });
   }
-  const server = http.createServer(requestHandler);
+  const server = http.createServer((req, res) => requestHandler(req, res, server));
   if (process.env.RIFFLEDESK_LOOPWATCH === '1') {
     // debug aid: report the worst event-loop stall per 5 s window
     let last = Date.now(), worst = 0;

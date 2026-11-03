@@ -10,6 +10,7 @@ const EXT_KIND = {
   '.json': 'json',
   '.csv': 'table', '.tsv': 'table',
   '.xlsx': 'sheet', '.xls': 'sheet',
+  '.pptx': 'slides',
   '.yaml': 'code', '.yml': 'code', '.toml': 'code', '.ini': 'code', '.cfg': 'code',
   '.py': 'code', '.js': 'code', '.mjs': 'code', '.ts': 'code', '.tsx': 'code',
   '.jsx': 'code', '.css': 'code', '.scss': 'code', '.less': 'code',

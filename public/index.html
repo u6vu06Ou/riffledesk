@@ -691,6 +691,8 @@
   integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT"
   crossorigin="anonymous"></script>
 <!-- 程式碼上色：本機 vendored highlight.js 11.9.0（離線可用；BSD-3，授權標頭在檔頭） -->
+<!-- .pptx 檢視：本機 vendored fflate（解 ZIP；MIT，瀏覽器純 JS） -->
+<script defer src="/vendor/fflate.min.js"></script>
 <script defer src="/vendor/highlight.min.js"></script>
 <script defer src="/vendor/languages-powershell.min.js"></script>
 <script defer src="/vendor/languages-dockerfile.min.js"></script>
@@ -728,6 +730,9 @@
 <button id="tabStrip" hidden></button>
 
 <div id="settings">
+  <div class="sgrp"><div class="slab" data-i18n="serviceTitle"></div>
+    <div id="serviceStatus" class="idxnote" role="status" aria-live="polite"></div>
+    <div class="seg"><button id="serviceRestart" data-i18n="serviceRestart"></button><button id="serviceStop" data-i18n="serviceStop"></button></div></div>
   <div class="sgrp"><div class="slab" data-i18n="setTheme"></div>
     <div class="seg"><button id="btnThemeLight" data-i18n="themeLight"></button><button id="btnThemeDark" data-i18n="themeDark"></button></div></div>
   <div class="sgrp"><div class="slab" data-i18n="setFont"></div>

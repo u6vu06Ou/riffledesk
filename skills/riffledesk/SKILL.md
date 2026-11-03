@@ -5,7 +5,13 @@ description: Use when the user asks to find a file ("find the file where…", �
 
 # riffledesk
 
-The user's local file browser. `riffledesk` is on PATH (or `node <repo>/bin/riffledesk.js`).
+The user's local file browser. On Windows always call `riffledesk.cmd`, never the
+bare `riffledesk` — that shim is a POSIX sh script, Git Bash forks several sh
+children per run, and enterprise EDR (Trend Micro Apex One behavior monitoring)
+blocks each fork as process injection, so bare calls fail and retry. On
+macOS/Linux plain `riffledesk` is fine. `node <repo>/bin/riffledesk.js` works
+everywhere. (Examples below write the short name — on Windows substitute
+`riffledesk.cmd`.)
 Port: `RIFFLEDESK_PORT`, then `PORT`, else 5177; pass `--port N` when unsure.
 
 ## Finding a file

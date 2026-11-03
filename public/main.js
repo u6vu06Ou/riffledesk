@@ -93,6 +93,7 @@ const CHIP_DEFS = [
   { id: 'json', label: '.json', exts: ['.json'] },
   { id: 'html', label: '.html', exts: ['.html', '.htm'] },
   { id: 'table', label: t('chipTable'), exts: ['.csv', '.tsv', '.xlsx', '.xls'] },
+  { id: 'slides', label: '.pptx', exts: ['.pptx'] },
   { id: 'code', label: t('chipCode'), exts: ['.py', '.js', '.mjs', '.ts', '.tsx', '.jsx', '.css', '.scss', '.less', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.java', '.go', '.rs', '.rb', '.php', '.sh', '.bash', '.bat', '.ps1', '.sql', '.lua', '.vue', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg'] },
   { id: 'image', label: t('chipImage'), exts: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'] },
   { id: 'video', label: t('chipVideo'), exts: ['.mp4', '.m4v', '.webm', '.ogv', '.mov'] },
@@ -2048,6 +2049,48 @@ window.__dbg = {
 // ---------------------------------------------------------------- 設定面板（⚙）：主題、字型、語言、說明
 const settingsEl = document.getElementById('settings');
 const btnSettings = document.getElementById('btnSettings');
+const serviceStatus = document.getElementById('serviceStatus');
+const serviceRestart = document.getElementById('serviceRestart');
+const serviceStop = document.getElementById('serviceStop');
+let currentService = null;
+async function refreshService() {
+  serviceStatus.textContent = t('serviceChecking');
+  serviceRestart.disabled = serviceStop.disabled = true;
+  try {
+    const response = await fetch('/api/service', { signal: AbortSignal.timeout(2500) });
+    if (!response.ok) { serviceStatus.textContent = t('serviceOld'); return; }
+    currentService = await response.json();
+    serviceStatus.textContent = t('serviceRunning', { version: currentService.version });
+    serviceRestart.disabled = serviceStop.disabled = false;
+  } catch (_) { serviceStatus.textContent = t('serviceUnavailable'); }
+}
+async function controlService(action) {
+  if (!currentService || (action === 'stop' && !confirm(t('serviceStopConfirm')))) return;
+  serviceRestart.disabled = serviceStop.disabled = true;
+  try {
+    const previous = currentService.instanceId;
+    const response = await fetch(`/api/service/${action}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instanceId: previous }),
+      signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error('service request failed');
+    serviceStatus.textContent = t(action === 'stop' ? 'serviceStopped' : 'serviceRestarting');
+    if (action === 'stop') return;
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+      try {
+        const next = await fetch('/api/service', { signal: AbortSignal.timeout(1000) }).then(r => r.json());
+        if (next.instanceId && next.instanceId !== previous) { location.reload(); return; }
+      } catch (_) {}
+    }
+    throw new Error('restart timed out');
+  } catch (_) {
+    serviceStatus.textContent = t('serviceUnavailable');
+    serviceRestart.disabled = serviceStop.disabled = false;
+  }
+}
+serviceRestart.addEventListener('click', () => controlService('restart'));
+serviceStop.addEventListener('click', () => controlService('stop'));
 function closeSettings() {
   if (!settingsEl.classList.contains('on')) return false;
   settingsEl.classList.remove('on'); btnSettings.classList.remove('on'); return true;
@@ -2055,7 +2098,7 @@ function closeSettings() {
 btnSettings.addEventListener('click', () => {
   const on = !settingsEl.classList.contains('on');
   settingsEl.classList.toggle('on', on); btnSettings.classList.toggle('on', on);
-  if (on) hideTip();
+  if (on) { hideTip(); refreshService(); }
 });
 addEventListener('pointerdown', e => {
   if (!settingsEl.contains(e.target) && !btnSettings.contains(e.target)) closeSettings();

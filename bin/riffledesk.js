@@ -17,6 +17,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const http = require('node:http');
 const { spawn, spawnSync } = require('node:child_process');
+const { startBackground, logFileFor } = require('./background');
 
 const ROOT = path.resolve(__dirname, '..');
 const PKG = require(path.join(ROOT, 'package.json'));
@@ -51,6 +52,9 @@ function usageText() {
 
 usage:
   riffledesk [--port N] [--no-open]        start the server and open the browser
+  riffledesk status [--port N]            show the running server version
+  riffledesk stop [--port N]              stop the local server
+  riffledesk restart [--port N]           restart the local server
   riffledesk open <file> [options]         open a file in the running browser
   riffledesk show <file...> [options]      show a shortlist of files as one stack (or read paths on stdin)
   riffledesk search "<text>" [options]     full-text search from this shell
@@ -62,6 +66,7 @@ usage:
 start options:
   --port N        port to listen on (default ${DEFAULT_PORT}, or $RIFFLEDESK_PORT / $PORT)
   --no-open       do not open the browser
+  --foreground    keep the server in this terminal (Ctrl+C to stop)
 
 open options:
   --line N        line to reveal
@@ -95,6 +100,8 @@ install-skill options:
   so Claude Code does not load the backup as a second skill). A symlinked
   target is refused rather than flattened.
 
+The launcher exits after starting a windowless background server. Closing the
+terminal or coding assistant does not stop it. Use stop or Settings to end it.
 If no server is listening on the port, open/search start one in the background
 (log file in the temp directory) and wait for it to come up.
 
@@ -113,6 +120,7 @@ function usage() {
 }
 
 const USAGE = {
+  start: 'usage: riffledesk [--port N] [--no-open] [--foreground]',
   open: `usage: riffledesk open <file> [--line N] [--port N] [--print-url]
 
 Open <file> in every browser tab currently showing riffledesk. Starts the
@@ -227,11 +235,12 @@ function valueArg(argv, i, name, usageText) {
 }
 
 function parseStart(argv) {
-  const opts = { port: defaultPort(), open: true, help: false };
+  const opts = { port: defaultPort(), open: true, foreground: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { for (const rest of argv.slice(i + 1)) if (/^\d+$/.test(rest)) opts.port = intArg(rest, 'port', USAGE.start); else fail(`unexpected argument: ${rest}`, 2, USAGE.start); break; }
     if (a === '--no-open') opts.open = false;
+    else if (a === '--foreground') opts.foreground = true;
     else if (a === '--port') opts.port = intArg(argv[++i], '--port', USAGE.start);
     else if (a.startsWith('--port=')) opts.port = intArg(a.slice(7), '--port', USAGE.start);
     else if (a === '-h' || a === '--help') opts.help = true;
@@ -474,31 +483,6 @@ async function isUp(port) {
     return r.status === 200 && !!d && d.ok === true &&
       Array.isArray(d.drives) && Array.isArray(d.roots) && Array.isArray(d.pinned);
   } catch (_) { return false; }
-}
-
-function logFileFor(port) {
-  return path.join(os.tmpdir(), `riffledesk-server-${port}.log`);
-}
-
-function startBackground(port) {
-  const logPath = logFileFor(port);
-  let fd;
-  try {
-    // a fresh file once the old one passes 2 MB; 'a' still follows a planted symlink
-    if (fs.statSync(logPath).size > 2 * 1024 * 1024) fs.rmSync(logPath, { force: true });
-  } catch (_) {}
-  try { fd = fs.openSync(logPath, 'a'); } catch (_) { fd = 'ignore'; }
-  const child = spawn(process.execPath, [path.join(ROOT, 'server.js'), String(port)], {
-    cwd: ROOT,
-    detached: true,
-    windowsHide: true,
-    stdio: ['ignore', fd, fd],
-    env: { ...process.env, PORT: String(port) }
-  });
-  child.on('error', () => {}); // a failed spawn surfaces as the ensureServer timeout
-  child.unref();
-  if (typeof fd === 'number') { try { fs.closeSync(fd); } catch (_) {} }
-  return logPath;
 }
 
 async function ensureServer(port) {
@@ -1101,6 +1085,13 @@ async function cmdInstallSkill(argv) {
 async function cmdStart(argv) {
   const opts = parseStart(argv);
   if (opts.help) { usage(); process.exit(0); }
+  if (!opts.foreground) {
+    await ensureServer(opts.port);
+    const url = `http://${HOST}:${opts.port}/`;
+    console.log(`${PKG.name} running in background at ${url}`);
+    if (opts.open && !openBrowser(url)) console.log(`open ${url} in your browser`);
+    return;
+  }
   let server, port;
   try {
     ({ server, port } = await listenWithRetry(opts.port));
@@ -1118,6 +1109,44 @@ async function cmdStart(argv) {
   const shutdown = () => server.close(() => process.exit(0));
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+}
+
+async function cmdService(action, argv) {
+  const opts = parseStart(argv);
+  if (opts.help) { usage(); return; }
+  let current;
+  try { current = await request(opts.port, 'GET', '/api/service', { timeout: 1500 }); }
+  catch (err) {
+    if (err.code !== 'ECONNREFUSED') throw err;
+    if (action === 'restart') return cmdStart(['--port', String(opts.port), '--no-open']);
+    console.log('riffledesk is stopped'); return;
+  }
+  const service = current.data;
+  if (current.status !== 200 || service?.name !== PKG.name || !service.instanceId) {
+    fail(`port ${opts.port} has an older or unrelated server; stop that instance manually first`, 1);
+  }
+  if (action === 'status') {
+    console.log(`${PKG.name} v${service.version} running at http://${HOST}:${opts.port}/ (pid ${service.pid})`);
+    return;
+  }
+  const r = await request(opts.port, 'POST', `/api/service/${action}`, {
+    body: { instanceId: service.instanceId },
+    headers: { 'X-RiffleDesk-CLI': '1' }
+  });
+  if (r.status !== 200 || !r.data?.ok) fail(r.data?.error || `server answered ${r.status}`, 1);
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    try {
+      const next = await request(opts.port, 'GET', '/api/service', { timeout: 1000 });
+      if (action === 'restart' && next.data?.instanceId && next.data.instanceId !== service.instanceId) {
+        console.log(`${PKG.name} v${next.data.version} restarted`); return;
+      }
+    } catch (err) {
+      if (action === 'stop' && err.code === 'ECONNREFUSED') { console.log('riffledesk stopped'); return; }
+    }
+  }
+  fail(`${action} did not complete — see ${logFileFor(opts.port)}`, 1);
 }
 
 function listenWithRetry(basePort) {
@@ -1149,6 +1178,7 @@ async function main() {
   if (first === 'changes') return cmdChanges(argv.slice(1));
   if (first === 'wait') return cmdWait(argv.slice(1));
   if (first === 'install-skill') return cmdInstallSkill(argv.slice(1));
+  if (['status', 'stop', 'restart'].includes(first)) return cmdService(first, argv.slice(1));
   if (first && !first.startsWith('-') && !/^\d+$/.test(first)) fail(`unknown command: ${first}`, 2, usageText());
   return cmdStart(argv);
 }

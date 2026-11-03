@@ -62,7 +62,13 @@ Node ≥ 22.5（索引要靠 `node:sqlite`；舊版 Node 可跑但只能即時�
 
 預設只是瀏覽，只有你叫它寫才寫：存檔、改名、刪除，每個寫入都是明確的一次點擊，而且刪除進回收筒、救得回來。
 
-伺服器只綁 `127.0.0.1`，開在 <http://127.0.0.1:5177/>。用 `PORT`、埠參數或 `riffledesk --port 5180` 換埠（啟動器在埠被佔時會往上試到 +10；`--no-open` 不開瀏覽器）。
+伺服器只綁 `127.0.0.1`，開在 <http://127.0.0.1:5177/>。用 `PORT`、埠參數或 `riffledesk --port 5180` 換埠；`--no-open` 不開瀏覽器。重複啟動會沿用同一個埠上的服務。
+
+啟動器開完就會結束，RiffleDesk 留在背景執行；關閉終端或 AI 助手不影響使用。到 **設定 → RiffleDesk** 可看版本、重新啟動或結束服務；這會影響連到該服務的所有分頁。結束後再次開啟 RiffleDesk 即可使用，不會自動設定開機啟動。
+
+命令列也有 `riffledesk status`、`riffledesk restart`、`riffledesk stop`，都接受 `--port N`。更新 npm 套件後要重新啟動服務，已執行的舊程式才會換新版。0.3.0 以前的服務需先手動結束一次。開發時用 `npm run dev` 或 `riffledesk --foreground` 留在終端執行，按 Ctrl+C 結束。Windows 若在 Git Bash 被防毒阻擋，改用 `riffledesk.cmd`。
+
+PowerPoint `.pptx` 可預覽投影片文字與圖片、顯示第一頁縮圖，並在閱讀區查找文字；動畫、SmartArt、母片效果及舊 `.ppt` 不支援，投影片內容也不納入全碟內文搜尋。
 
 ## 給 AI agent 的命令列
 

@@ -9,6 +9,7 @@ import { EditorSession } from './editor.js';
 import { FindBar } from './find.js';
 import { Revise } from './revise.js';
 import { pathExtOf } from './fileurl.js';
+import { parsePptx, renderSlides, disposeSlides } from './pptxview.js';
 
 // ---- 設定面板：「複製給 AI」長度上限 ----
 // 用模組層自己掛（main.js 不碰），reader.js 一被載入就生效。
@@ -779,6 +780,7 @@ export class Reader {
     this.header.classList.toggle('tabhead', file.kind === 'tab');
     this.body.className = '';
     this.body.textContent = '';
+    disposeSlides(this.body);   // 從 pptx 切走：回收 blob URL＋ResizeObserver
     setCodeControlsVisible(false);   // 預設藏起來；setCode() 打開程式碼檢視時才亮出
     // secret warning strip (reads masked matches from /api/secretscan)
     this.secretEl.classList.remove('on');
@@ -875,6 +877,13 @@ export class Reader {
         const wb = XLSX.read(buf, { type: 'array' });
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true });
         el.innerHTML = rowsToTable(rows.slice(0, 300));
+      } else if (file.kind === 'slides') {
+        // .pptx：純瀏覽器端解 ZIP 解析 OOXML（pptxview.js），每張投影片一張等比縮放 HTML 卡
+        const buf = await (await api(url)).arrayBuffer();
+        if (stale()) return;
+        const parsed = parsePptx(buf);   // 失敗（非 pptx／壞檔）→ 外層 catch 畫錯誤
+        if (stale()) return;
+        renderSlides(el, parsed);
       } else {
         const text = await (await api(url)).text();
         if (this.canEdit(file)) this.rawText = text;   // 編輯器進場用（原始檔，不是 pretty 版）

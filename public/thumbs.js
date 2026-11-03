@@ -4,6 +4,7 @@ import { fmtSize, fmtDate, fmtDateTime, KIND_LABEL, kindOf, theme, themeNow, the
 import { fontStack } from './fonts.js';
 import { thumbCodeColors, tokenizeLine } from './codetheme.js';
 import { pathExtOf } from './fileurl.js';
+import { pptxThumb } from './pptxview.js';
 
 export const TEX_W = 1280, TEX_H = 800;         // full thumbnail canvas（1.6:1 寬卡，與 stack.js CARD_W/CARD_H 同比例）
 const PH_W = 640, PH_H = 400;                   // placeholder canvas（同 1.6:1）
@@ -538,6 +539,65 @@ function paintVideoBody(ctx, W, H, tabH) {
   ctx.textAlign = 'left';
 }
 
+// 投影片卡面（.pptx）：第一張投影片第一張圖鋪上半＋標題、內文幾行；
+// 沒圖就純文字（最大字的當標題）。thumb = pptxview.pptxThumb() 的回傳。
+function paintSlides(ctx, W, H, thumb, tabH) {
+  let y = tabH;
+  if (thumb.bitmap) {
+    const imgH = Math.round((H - tabH) * 0.55);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, tabH, W, imgH);
+    ctx.clip();
+    const sc = Math.max(W / thumb.bitmap.width, imgH / thumb.bitmap.height);
+    const dw = thumb.bitmap.width * sc, dh = thumb.bitmap.height * sc;
+    ctx.drawImage(thumb.bitmap, (W - dw) / 2, tabH + (imgH - dh) / 2, dw, dh);
+    ctx.restore();
+    ctx.strokeStyle = theme().paperEdge;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, tabH + imgH + 1); ctx.lineTo(W, tabH + imgH + 1); ctx.stroke();
+    y = tabH + imgH + 20;
+  } else {
+    y = tabH + Math.round((H - tabH) * 0.12);
+  }
+  const PAD = 48;
+  const maxW = W - PAD * 2;
+  let firstLine = true;
+  for (const line of thumb.lines) {
+    const big = firstLine && (line.text === thumb.title);
+    ctx.font = `${big ? 600 : 400} ${big ? 44 : 28}px ${fontStack()}`;
+    ctx.fillStyle = big ? theme().fg : theme().dim;
+    ctx.textAlign = 'left';
+    ctx.fillText(line.text.slice(0, 40), PAD, y + (big ? 44 : 34), maxW);
+    y += big ? 62 : 44;
+    if (y > H - 30) break;
+    firstLine = firstLine && !big;
+  }
+  ctx.textAlign = 'left';
+}
+
+// fflate 沒載到（或檔壞了）時的通用 pptx 卡面：圖示＋提示，不報錯。
+function paintSlidesGeneric(ctx, W, H, tabH) {
+  const iconPx = 96;
+  const cy = tabH + Math.round((H - tabH) * 0.30);
+  ctx.font = `${iconPx}px ${fontStack()}`;
+  ctx.fillStyle = theme().dim;
+  ctx.textAlign = 'center';
+  ctx.fillText('📊', W / 2, cy + iconPx * 0.5);
+  ctx.font = `26px ${fontStack()}`;
+  ctx.fillText('PowerPoint', W / 2, cy + iconPx + 28);
+  ctx.textAlign = 'left';
+}
+
+// 兩處（檔案卡＋file:// 分頁卡）共用：抓整份 pptx → 畫第一張投影片的縮圖內容。
+async function paintSlidesBody(ctx, W, H, url, tabH) {
+  if (typeof fflate === 'undefined') { paintSlidesGeneric(ctx, W, H, tabH); return; }
+  const buf = await (await fetch(url).then(r => { if (!r.ok) throw new Error('http ' + r.status); return r; })).arrayBuffer();
+  const thumb = await pptxThumb(buf);
+  if (!thumb.lines.length && !thumb.bitmap) { paintSlidesGeneric(ctx, W, H, tabH); return; }
+  paintSlides(ctx, W, H, thumb, tabH);
+}
+
 // file:// 分頁：直接把本機檔的內容畫在卡身上（跟檔案模式同一套畫法）。
 // 讀不到（檔案沒了／不在允許範圍／類型不認得）就丟錯，呼叫端退回說明卡面。
 async function paintLocalBody(ctx, W, H, file, tabH) {
@@ -553,6 +613,7 @@ async function paintLocalBody(ctx, W, H, file, tabH) {
     paintSheet(ctx, W, H, XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true }), tabH);
     return;
   }
+  if (kind === 'slides') { await paintSlidesBody(ctx, W, H, url, tabH); return; }
   const r = await fetch(url + '&head=' + HEAD_BYTES);
   if (!r.ok) throw new Error('http ' + r.status);
   const text = await r.text();
@@ -742,6 +803,8 @@ export async function buildThumbCanvas(file) {
       const wb = XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       paintSheet(ctx, W, H, XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }), tabH);
+    } else if (file.kind === 'slides') {
+      await paintSlidesBody(ctx, W, H, url, tabH);
     } else if (file.kind === 'pdf') {
       // 刻意為空（不可 fall through）：原 90px PDF 浮水印已移除——檔名已在檔名列，
       // 浮水印會蓋內文；PDF 卡只留頁籤，不 fetch 內容。

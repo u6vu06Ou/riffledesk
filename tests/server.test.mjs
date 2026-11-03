@@ -36,6 +36,9 @@ write('node_modules/pkg/dep.md', 'magicword must NOT be found from node_modules\
 write('CaseDir/upper.md', 'case sensitivity test content\n');
 fs.writeFileSync(path.join(FIX, 'img.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 fs.writeFileSync(path.join(FIX, 'clip.mp4'), Buffer.alloc(64, 7));   // 假影片：只測 HTTP 行為，不解碼
+fs.writeFileSync(path.join(FIX, 'deck.pptx'), Buffer.from('PK\x03\x04 fake pptx bytes'));   // 假 pptx：只測 kind/容量，不解 ZIP
+fs.writeFileSync(path.join(FIX, 'query.xyz'), 'unknown ext\n');
+fs.writeFileSync(path.join(FIX, 'huge.pptx'), Buffer.alloc(21 * 1024 * 1024, 3));           // 超過 sheet cap → 413
 
 const CONFIG_PATH = path.join(TMP, 'config.json');
 fs.writeFileSync(CONFIG_PATH, JSON.stringify({ roots: [FIX], pinned: [] }, null, 2));
@@ -218,6 +221,33 @@ test('api suite', async (t) => {
       assert.equal(tail.body.length, 8);
       const bad = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'clip.mp4'))}`, { Range: 'bytes=100-200' });
       assert.equal(bad.status, 416);
+    });
+
+    await t.test('slides: /api/list marks .pptx as kind slides', async () => {
+      const { status, body } = await getJson(`/api/list?path=${encodeURIComponent(FIX)}&exts=.pptx`);
+      assert.equal(status, 200);
+      const deck = body.files.find(f => f.name === 'deck.pptx');
+      assert.ok(deck, 'deck.pptx must be listed');
+      assert.equal(deck.kind, 'slides');
+    });
+
+    await t.test('slides: /api/file serves .pptx raw bytes with pptx MIME', async () => {
+      const r = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'deck.pptx'))}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.headers.get('x-file-kind'), 'slides');
+      assert.equal(r.headers.get('content-type'), 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+      assert.equal(r.body.length, 20);
+      assert.equal(r.body.subarray(0, 2).toString('utf8'), 'PK');
+    });
+
+    await t.test('slides: over the sheet cap is rejected with 413 (no silent truncation)', async () => {
+      const r = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'huge.pptx'))}`);
+      assert.equal(r.status, 413);
+    });
+
+    await t.test('unknown extension still 415', async () => {
+      const r = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'query.xyz'))}`);
+      assert.equal(r.status, 415);
     });
 
     await t.test('search: case-insensitive', async () => {

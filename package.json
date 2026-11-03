@@ -1,6 +1,6 @@
 {
   "name": "riffledesk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local read-only 3D file browser (three.js card stack) with recursive full-text search",
   "license": "MIT",
   "author": "u6vu06ou",
@@ -42,12 +42,14 @@
     "skills/",
     "config.example.json",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "start.sh",
     "start.bat"
   ],
   "scripts": {
-    "start": "node server.js",
+    "start": "node bin/riffledesk.js",
+    "dev": "node bin/riffledesk.js --foreground --no-open",
     "launch": "node bin/riffledesk.js",
     "test": "node --test \"tests/*.test.mjs\"",
     "test:e2e": "node tests/e2e.mjs",
@@ -55,6 +57,8 @@
     "test:edit": "node tests/edit-find-e2e.mjs",
     "test:pile": "node tests/pile-e2e.mjs",
     "test:project": "node tests/project-e2e.mjs",
+    "test:service": "node tests/service-e2e.mjs",
+    "test:pptx": "node tests/pptx-e2e.mjs",
     "test:tabs": "node tests/tabs-e2e.mjs",
     "test:tabs-ext": "node tests/tabs-ext-e2e.mjs",
     "test:panel": "node tests/panel-e2e.mjs",
