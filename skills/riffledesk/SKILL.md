@@ -43,6 +43,10 @@ it only notifies — the user clicks the notification or the left column — and
 prints `/?pile=<id>` when no tab is connected. Prefer `show` over N × `open`.
 
 ## When you generate HTML
+- Choose the format that explains the user's task. Markdown remains valid;
+  HTML may mix text, images, SVG diagrams and an embedded interactive three.js
+  figure. No extra skill or fixed template is required. See [delivery capabilities](DELIVERABLES.md)
+  only when richer output would help.
 - Mark editable regions `data-rd-id="unique-name"` — the revamp list finds
   elements by that id, so feedback survives edits.
 - Relative paths, no `file:///C:/...`; layout and text in the DOM, not a canvas.

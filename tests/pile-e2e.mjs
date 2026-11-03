@@ -173,10 +173,19 @@ async function main() {
   const selRow = await page.evaluate(() => document.querySelector('#projPiles .pile-row.sel') !== null);
   ok(selRow, 'the pile row is the selected row in the left column');
 
-  // ---------- 5. chips still filter the pile (images only → empty, back to all → three)
+  // ---------- 5. folder type choices never hide AI handoff files.
   await page.evaluate(() => window.__dbg.selectChip('image'));
   await sleep(500);
-  ok((await cardNames(page)).size === 0, 'an image chip empties a text-only pile');
+  ok((await cardNames(page)).size === 3, 'image-only folder filter keeps all three delivered notes');
+  ok(/此疊顯示全部|All files in this pile/.test(await page.locator('#chips summary').innerText()), 'type control explains that piles show everything');
+  ok(await page.locator('#projPiles .pile-row.sel .cnt').innerText() === '3', 'pile count stays independent of folder filters');
+  await page.locator('#pathBar .pile-back').click();
+  await sleep(500);
+  ok((await names(page)).length === 0, 'leaving a pile restores the image-only folder filter');
+  ok(!/此疊顯示全部|All files in this pile/.test(await page.locator('#chips summary').innerText()), 'folder type label returns after leaving a pile');
+  await page.evaluate(id => window.__dbg.pileOpen(id), rows[0]);
+  await page.waitForFunction(() => window.__dbg.pileState());
+  ok((await cardNames(page)).size === 3, 'entering a pile with an existing image filter still shows every delivered note');
   await page.evaluate(() => window.__dbg.selectChip('md'));
   await sleep(500);
   ok((await cardNames(page)).size === 3, 'a markdown chip brings the three back');
@@ -296,6 +305,20 @@ async function main() {
   ok(await onePage.evaluate(() => document.body.classList.contains('mode-wide')), '?pile= with one file lands on the wide layout');
   ok((await onePage.evaluate(() => window.__dbg.pileState())) === null, '?pile= with one file does not show the pile stack');
   await onePage.close();
+
+  // Missing files affect counts; folder filters do not. No fixture escapes TMP.
+  fs.unlinkSync(RD('alpha/two.md'));
+  let listed = await (await fetch(BASE + '/api/piles')).json();
+  ok(listed.piles.find(p => p.id === r4.body.id).count === 1, 'list count excludes a removed delivered file');
+  fs.unlinkSync(RD('beta/three.md'));
+  listed = await (await fetch(BASE + '/api/piles')).json();
+  ok(listed.piles.find(p => p.id === r4.body.id).count === 0, 'list count becomes zero when every delivered file is gone');
+  await page.reload();
+  await page.waitForFunction(() => window.__dbg?.ready());
+  const emptyCount = page.locator(`[data-pile="${r4.body.id}"] .cnt`);
+  await page.waitForFunction(id => document.querySelector(`[data-pile="${id}"] .cnt`)?.textContent === '0', r4.body.id);
+  ok(await emptyCount.evaluate(el => el.classList.contains('zero')), 'only an empty pile count is muted');
+  ok(/不在了|left/.test(await emptyCount.getAttribute('title')), 'empty count explains the missing files');
 }
 
 main()

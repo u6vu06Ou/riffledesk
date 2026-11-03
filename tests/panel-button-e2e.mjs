@@ -407,6 +407,26 @@ async function main() {
   ok(focusMsgs.length >= 1, 'tab-focus messages actually arrived (the storm is real)',
     { count: focusMsgs.length, ts: focusMsgs.map(e => e.t) });
 
+  // Health probe failures must not unload the live app or switch its view.
+  const identity = await frame.evaluate(() => {
+    window.__healthIdentity = Math.random().toString(36);
+    return window.__healthIdentity;
+  });
+  const healthRoute = route => route.abort('timedout');
+  await panelPg.route('**/manifest.webmanifest', healthRoute);
+  for (let i = 0; i < 3; i++) {
+    await panelPg.evaluate(async () => { clearTimeout(retryTimer); await tick(); });
+  }
+  ok(await frame.evaluate(id => window.__healthIdentity === id && window.__dbg.tabs().active, identity),
+    'three failed health probes keep the same iframe and browser view');
+  ok(await panelPg.locator('#connection').isVisible(), 'connection retry status is visible without clearing cards');
+  await panelPg.screenshot({ path: path.join(ROOT, 'docs/screenshots/panel-reconnecting.png') });
+  await panelPg.unroute('**/manifest.webmanifest', healthRoute);
+  await panelPg.evaluate(async () => { clearTimeout(retryTimer); await tick(); });
+  ok(await frame.evaluate(id => window.__healthIdentity === id && window.__dbg.tabs().active, identity),
+    'health recovery keeps the original iframe and browser view');
+  ok(await panelPg.locator('#connection').isHidden(), 'connection retry status disappears after recovery');
+
   // ---- 報表 ---------------------------------------------------------------------
   console.log('\n---- measurements ----');
   console.log(JSON.stringify({

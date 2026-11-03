@@ -9,11 +9,13 @@ applyStatic();
 import { FolderTree } from './tree.js';
 import { Reader } from './reader.js';
 import { attachScrubber } from './scrub.js';
-import { initLive } from './live.js';
+import { initLive, liveViewChanged } from './live.js';
 import { createUndo, newGroup } from './undo.js';
 import { initMirror } from './mirror.js';
-import { initProject, initProjectSettings, handleProject, handlePile, clickPileToast, setHiddenForTest, restoreRecent, restorePiles, clickNotification, requestUrlOpen, diffFor, noteDiff } from './project.js';
+import { initProject, initProjectSettings, handleProject, handlePile, clickPileToast, setHiddenForTest, restoreRecent, restorePiles, clickNotification, requestUrlOpen, diffFor, noteDiff, updatePileCount } from './project.js';
 import { TabsMode } from './tabs.js';
+import { foldSection } from './sections.js';
+import { showConvoInfo, convoInfoLabel } from './convo-info.js';
 import { TAB_X_ZONE, TAB_AI_ZONE, tabBadgeAt } from './thumbs.js';
 import { copyTabForAI } from './tabcopy.js';
 import { loadSharedPrefs, sharedPrefsNow, postSharedPrefs } from './prefs.js';
@@ -91,7 +93,7 @@ const CHIP_DEFS = [
   { id: 'md', label: '.md', exts: ['.md', '.markdown'] },
   { id: 'txt', label: '.txt', exts: ['.txt', '.log'] },
   { id: 'json', label: '.json', exts: ['.json'] },
-  { id: 'html', label: '.html', exts: ['.html', '.htm'] },
+  { id: 'html', label: t('chipHtml'), exts: ['.html', '.htm'] },
   { id: 'table', label: t('chipTable'), exts: ['.csv', '.tsv', '.xlsx', '.xls'] },
   { id: 'slides', label: '.pptx', exts: ['.pptx'] },
   { id: 'code', label: t('chipCode'), exts: ['.py', '.js', '.mjs', '.ts', '.tsx', '.jsx', '.css', '.scss', '.less', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.java', '.go', '.rs', '.rb', '.php', '.sh', '.bash', '.bat', '.ps1', '.sql', '.lua', '.vue', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg'] },
@@ -105,7 +107,10 @@ const CHIP_DEFS = [
 let chipsOn = ['readable'];
 try {
   const saved = JSON.parse(localStorage.getItem('floderChips2') || 'null');
-  if (Array.isArray(saved) && saved.length) chipsOn = saved;
+  if (Array.isArray(saved) && saved.length) {
+    const valid = saved.filter(id => CHIP_DEFS.some(d => d.id === id));
+    chipsOn = valid.includes('all') ? ['all'] : valid.includes('readable') ? ['readable'] : valid.length ? valid : ['readable'];
+  }
 } catch (_) {}
 
 function extsParam() {
@@ -135,25 +140,45 @@ function applyChips(next) {
 }
 
 function buildChips() {
+  const wasOpen = chipsEl.querySelector('details')?.open;
+  const focused = chipsEl.contains(document.activeElement) ? document.activeElement.dataset.chip : null;
   chipsEl.innerHTML = '';
+  const details = document.createElement('details');
+  details.open = !!wasOpen;
+  const summary = document.createElement('summary');
+  summary.textContent = pileState ? t('pileShowsAll') : t('chipTypeDrop') + ': ' + CHIP_DEFS.filter(d => chipsOn.includes(d.id)).map(d => d.label).join('、');
+  summary.title = summary.textContent;
+  details.appendChild(summary);
+  const choices = document.createElement('div'); choices.className = 'type-choices';
+  const hint = document.createElement('p'); hint.textContent = t(pileState ? 'pileFilterHint' : 'chipMultiHint'); choices.appendChild(hint);
   for (const def of CHIP_DEFS) {
     const b = document.createElement('button');
     b.className = 'chip' + (chipsOn.includes(def.id) ? ' on' : '');
-    b.textContent = def.label;
+    b.textContent = (chipsOn.includes(def.id) ? '☑ ' : '☐ ') + def.label;
+    b.setAttribute('role', 'checkbox');
+    b.setAttribute('aria-checked', String(chipsOn.includes(def.id)));
     b.dataset.chip = def.id;
-    b.addEventListener('click', async (e) => {
-      // 單選語意：一般點擊只亮這一個（預設 .md）；按住 Ctrl / Shift 點＝多選加減
-      const next = e.ctrlKey || e.shiftKey || e.metaKey
-        ? (chipsOn.includes(def.id)
-            ? (chipsOn.length > 1 ? chipsOn.filter(id => id !== def.id) : chipsOn)  // 至少保留一個
-            : [...chipsOn, def.id])
-        : [def.id];
+    b.addEventListener('click', () => {
+      const specific = chipsOn.filter(id => !['all', 'readable'].includes(id));
+      const next = def.special ? [def.id] : specific.includes(def.id)
+        ? (specific.length > 1 ? specific.filter(id => id !== def.id) : ['readable'])
+        : [...specific, def.id];
       applyChips(next);
     });
-    chipsEl.appendChild(b);
+    choices.appendChild(b);
   }
+  details.appendChild(choices); chipsEl.appendChild(details);
+  if (focused) chipsEl.querySelector(`[data-chip="${focused}"]`)?.focus();
   buildChipSel();
 }
+document.addEventListener('pointerdown', e => {
+  if (!chipsEl.contains(e.target)) chipsEl.querySelector('details')?.removeAttribute('open');
+});
+chipsEl.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  chipsEl.querySelector('details')?.removeAttribute('open');
+  chipsEl.querySelector('summary')?.focus(); e.stopPropagation();
+});
 
 // panel 模式的「類型 ▾」下拉（窄欄放不下九顆 chips）：單選語意，選完即生效。
 // 與 chips 共享 chipsOn 狀態；分頁模式下整個停用（CSS 已藏掉，這裡再 disable 一層給驗收用）
@@ -640,7 +665,7 @@ async function buildConvoSections() {
   tree.crowRows.clear();                    // 舊列要整批換掉，hover 登記失了根
   const wrap = el('div');
   wrap.id = 'convos';
-  wrap.appendChild(el('div', 'sec', t('secRecent')));
+  const recentBody = foldSection(wrap, t('secRecent'), 'recent');
   const todayM = makeCrow({ icon: '🕘', label: t('recToday') });
   const weekM = makeCrow({ icon: '🕘', label: t('recWeek') });
   todayM.hours = 24; weekM.hours = 168;
@@ -648,7 +673,7 @@ async function buildConvoSections() {
   weekM.row.addEventListener('click', () => openRecent(168, weekM.row));
   tree.attachCrow(todayM.row, { hours: 24 });    // hover 預覽跟資料夾同一套
   tree.attachCrow(weekM.row, { hours: 168 });
-  wrap.appendChild(todayM.row); wrap.appendChild(weekM.row);
+  recentBody.appendChild(todayM.row); recentBody.appendChild(weekM.row);
   recentRowsMeta = [todayM, weekM];
   // 索引檔 mtime 查的「最近改動」：跟上面確定是 AI 寫的分開，來源不可考——扣掉 AI 寫的檔才顯示
   const changedM = makeCrow({ icon: '📝', label: t('recChanged') });
@@ -656,11 +681,11 @@ async function buildConvoSections() {
   changedM.row.title = t('changedTip');
   changedM.row.addEventListener('click', () => openChanged(168, changedM.row));
   tree.attachCrow(changedM.row, { changedHours: 168 });
-  wrap.appendChild(changedM.row);
+  recentBody.appendChild(changedM.row);
   changedRowsMeta = [changedM];
-  wrap.appendChild(el('div', 'sec', t('secConvos')));
+  const convoBody = foldSection(wrap, t('secConvos'), 'conversations');
   const listEl = el('div');
-  wrap.appendChild(listEl);
+  convoBody.appendChild(listEl);
   if (convoWrap) convoWrap.remove();
   convoWrap = wrap;
   treeEl.insertBefore(wrap, (tree.secQuick && tree.secQuick.isConnected) ? tree.secQuick : treeEl.firstChild);
@@ -680,7 +705,15 @@ async function buildConvoSections() {
     if (c.auto) m.row.classList.add('auto');
     m.cnt.textContent = String(c.fileCount);
     m.cnt.classList.toggle('zero', c.fileCount === 0);
-    m.row.title = c.project || c.title || '';
+    m.row.title = c.firstPrompt || c.title || c.project || '';
+    const info = el('button', 'convo-info', 'ⓘ');
+    info.type = 'button'; info.title = convoInfoLabel;
+    info.setAttribute('aria-label', convoInfoLabel);
+    info.addEventListener('click', e => {
+      e.stopPropagation();
+      showConvoInfo(c, agentTag(c.agent), copyText, postOp);
+    });
+    m.row.insertBefore(info, m.cnt);
     m.row.addEventListener('click', () => openConvo(c, m.row));
     tree.attachCrow(m.row, { id: c.id, title: c.title });   // hover 預覽跟資料夾同一套
     listEl.appendChild(m.row);
@@ -921,7 +954,7 @@ function loadPseudo() {         // chips 切換／檔案被刪後重載目前的
 
 // ====================== AI 整理的疊：只顯示這一疊，別的檔一張都不出現 ======================
 // 一疊＝伺服器存下的一組路徑（/api/pile）。進來時記住原本的資料夾，「✕／Esc」回那裡。
-// chips 類型過濾、排序、多選、右鍵、閱讀、編輯都照常——卡堆只是換了資料來源。
+// AI 交付的疊完整顯示，不受資料夾的類型篩選影響；排序、多選、閱讀、編輯照常。
 function pileRowsEl() { return document.getElementById('projPiles'); }
 function pileRowFor(id) {
   const box = pileRowsEl();
@@ -945,11 +978,12 @@ function showPileBar() {
 
 function applyPile() {
   if (!pileState) return;
-  const files = pileState.files.filter(chipsAcceptFile);
+  const files = pileState.files;
+  updatePileCount(pileState.id, files.length);
   stack.setFolder(pileState.title, files);
   showPileBar();
-  statusEl.textContent = t('fileCount', { path: pileState.title, n: files.length });
-  // 開疊順便開第一顆看得到的檔（chips 全濾光就不開）；只有第一次進來才自動開
+  statusEl.textContent = files.length ? t('fileCount', { path: pileState.title, n: files.length }) : t('pileNone');
+  // 只有第一次進來才順便開第一顆檔。
   if (files.length && !pileAutoReader) autoOpenPileFront(files[0]);
 }
 
@@ -998,6 +1032,8 @@ async function openPile(id, row) {
   if (!pileState) pileReturn = convoState ? { kind: 'crow', meta: { ...convoState } }
     : (lockedFolder ? { kind: 'folder', path: lockedFolder } : null);
   pileState = { id: d.id, title: d.title || t('pileNoTitle'), files };
+  buildChips();
+  updatePileCount(d.id, files.length);
   pileAutoReader = null;
   exitPseudo(true);
   convoState = null;
@@ -1019,6 +1055,7 @@ function dropPile() {
   if (!pileState) return;
   pileState = null;
   pileReturn = null;
+  buildChips();
   restorePileAutoReader(pileAutoReader);   // 疊被別的東西接手：順便開的閱讀欄也別留著
   for (const r of treeEl.querySelectorAll('#projPiles .sel')) r.classList.remove('sel');
 }
@@ -1032,7 +1069,10 @@ async function reloadPile() {
     if (!pileState || pileState.id !== id) return;
     pileState.files = d.files || [];
     applyPile();
-  } catch (_) { if (pileState) pileState.files = []; applyPile(); }
+  } catch (e) {
+    // A failed request is not evidence that the delivered files were deleted.
+    if (pileState && pileState.id === id) statusEl.textContent = t('readFail', { msg: e.message });
+  }
 }
 
 function closePile() {
@@ -1041,6 +1081,7 @@ function closePile() {
   const auto = pileAutoReader;
   pileState = null;
   pileReturn = null;
+  buildChips();
   for (const r of treeEl.querySelectorAll('#projPiles .sel')) r.classList.remove('sel');
   for (const r of treeEl.querySelectorAll('.crow.sel')) r.classList.remove('sel');
   if (back && back.kind === 'folder') { tree.lock(back.path); restorePileAutoReader(auto); return; }
@@ -1068,6 +1109,7 @@ const tabsMode = new TabsMode({
   // 側邊欄網頁卡上的 ⧉＝複製給 AI（跟完整版右欄預覽的按鈕同一條流程，tabcopy.js）
   copyForAi: f => { copyTabForAI(f.tab, { toast: m => toast(m) }).catch(() => {}); },
   setBtnOn: on => {
+    liveViewChanged();
     document.getElementById('btnTabs').classList.toggle('on', on);
     document.getElementById('btnModeFiles').classList.toggle('on', !on);
     document.body.classList.toggle('tabs-on', on);
@@ -1344,6 +1386,7 @@ function navOpenFront() {
 }
 
 addEventListener('keydown', e => {
+  if (e.target && e.target.closest && e.target.closest('dialog[open]')) return;
   const tag = e.target && e.target.tagName;
   const mod = e.ctrlKey || e.metaKey;
   // 閱讀區專屬快捷鍵：Ctrl+F／Ctrl+S／Ctrl+E（只在閱讀開著時攔，不搶瀏覽器自己的 Ctrl+F 以外行為）
@@ -1357,6 +1400,8 @@ addEventListener('keydown', e => {
     }
     if (k === 'enter' && reader.editing()) { e.preventDefault(); reader.btnSaveExit.click(); return; }
   }
+  // Overflow tools are also available while editing; dismiss their menu first.
+  if (e.key === 'Escape' && closeMenu()) { e.preventDefault(); document.getElementById('btnMore').focus(); return; }
   // 改版模式：Esc 離開改版、Ctrl+Z 復原上一個改動
   if (reader.revise.active()) {
     // the find bar sits on top of the overlay — Esc must close it first, not the mode
@@ -1935,8 +1980,8 @@ window.__dbg = {
       title: b.title, barLabel: selBar.querySelector('[data-act=all]').textContent };
   },
   selectChip: id => {
-    const b = chipsEl.querySelector(`[data-chip="${id}"]`);
-    if (b) b.click();
+    // Programmatic selection replaces the set; UI checkbox clicks toggle it.
+    if (CHIP_DEFS.some(d => d.id === id)) applyChips([id]);
   },
   chipsOn: () => [...chipsOn],
   lockedFolder: () => lockedFolder,
@@ -2310,7 +2355,31 @@ stack.onCardMenu = (file, x, y) => openMenu(file, x, y);
 document.getElementById('btnMore').addEventListener('click', e => {
   if (!reader.file) return;
   const r = e.currentTarget.getBoundingClientRect();
-  openMenu(reader.file, r.left - 160, r.bottom + 4);
+  if (reader.editor.isActive()) renderMenuItems(reader.file, [], r.left - 160, r.bottom + 4);
+  else openMenu(reader.file, r.left - 160, r.bottom + 4);
+  // Mirror only controls hidden by layout, never actions unavailable for this file.
+  const overflow = document.createDocumentFragment();
+  const addAction = (label, action, disabled = false) => {
+    const item = document.createElement('button');
+    item.type = 'button'; item.className = 'it'; item.textContent = label;
+    Object.assign(item.style, { display: 'block', width: '100%', border: '0', background: 'transparent', color: 'inherit', textAlign: 'left', font: 'inherit' });
+    item.disabled = disabled;
+    item.addEventListener('click', () => { closeMenu(); action(); });
+    overflow.appendChild(item);
+  };
+  for (const control of document.querySelectorAll('#readerBtns button, #readerBtns select')) {
+    if (control.hidden || control.id === 'btnMore' || getComputedStyle(control).display !== 'none') continue;
+    if (control.tagName === 'SELECT') {
+      for (const option of control.options) addAction(`${control.title}: ${option.textContent}${option.selected ? ' ✓' : ''}`, () => {
+        control.value = option.value; control.dispatchEvent(new Event('change', { bubbles: true }));
+      }, control.disabled);
+    } else addAction(control.title || control.textContent, () => control.click(), control.disabled);
+  }
+  const head = menuEl.querySelector('.head');
+  head.after(overflow);
+  menuEl.style.maxHeight = 'calc(100vh - 16px)'; menuEl.style.overflowY = 'auto';
+  const bounds = menuEl.getBoundingClientRect();
+  menuEl.style.top = Math.max(8, Math.min(r.bottom + 4, innerHeight - bounds.height - 8)) + 'px';
   e.stopPropagation();
 });
 
@@ -2506,10 +2575,11 @@ reader.onOpenPath = async (path, hash) => {
 // ---------------------------------------------------------------- live 更新（live.js 的回呼）
 // 這裡只提供 live.js 需要的狀態與動作；SSE／藥丸／⟳／R 鍵／索引開關都在 live.js。
 let convoRenderedFP = '';   // 目前左欄對話區渲染的是哪份清單（buildConvoSections 會更新）
-function convoFingerprint(list) { return list.map(c => c.id + '@' + c.updated + ':' + c.fileCount).join('|'); }
+function convoFingerprint(list) { return JSON.stringify(list.map(c => [c.id, c.updated, c.fileCount, c.title, c.firstPrompt, c.sessionTitle, c.transcriptPaths])); }
 
 // 藥丸點擊／⟳／R：重載目前資料夾（清掉自己的 dirCache）；正在讀的卡還在就繼續讀
 async function reloadCurrentView() {
+  if (tabsMode.active) { await tabsMode.apply(); return; }
   const keep = mode !== 'twocol' ? reader.file : null;
   if (lockedFolder) {
     for (const k of [...dirCache.keys()]) if (k.startsWith(lockedFolder + '|')) dirCache.delete(k);
@@ -2558,8 +2628,9 @@ function liveConvosChanged() {
 initLive({
   stack,
   panel: PANEL,                     // 側邊欄：SSE 掛 ?panel=1，投影／疊的廣播不發給它
-  currentTarget: () => (convoState || pileState ? null : lockedFolder),
-  isPseudo: () => !!(convoState || pileState),
+  currentTarget: () => (tabsMode.active || convoState || pileState ? null : lockedFolder),
+  isTabs: () => tabsMode.active,
+  isPseudo: () => !tabsMode.active && !!(convoState || pileState),
   reload: reloadCurrentView,
   refreshTree: refreshTreeCounts,
   refreshConvos: liveConvosChanged,

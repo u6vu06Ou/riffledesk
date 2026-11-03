@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5195;
 const BASE = `http://127.0.0.1:${PORT}`;
-const SHOTS = path.join(ROOT, 'docs', 'screenshots');
+const SHOTS = process.env.RIFFLEDESK_TEST_OUTPUT || path.join(ROOT, 'docs', 'screenshots');
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
@@ -32,16 +32,17 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffle-panel-'));
 const RD = p => path.join(TMP, ...p.split('/'));
 const handoffPath = RD('root/handoff.md');
 fs.mkdirSync(RD('root'), { recursive: true });
-fs.mkdirSync(RD('convos'), { recursive: true });
+fs.mkdirSync(RD('convos/project'), { recursive: true });
 fs.writeFileSync(handoffPath, '# handoff\n新鮮出爐的交接文件，側邊欄一開就該看到它。\n');
 fs.writeFileSync(RD('root/readme.md'), '# panel fixture\n只是讓根目錄不為空\n');
 const nowIso = new Date().toISOString();
-fs.writeFileSync(RD('convos/fake.jsonl'), [
+fs.writeFileSync(RD('convos/project/fake.jsonl'), [
   JSON.stringify({ type: 'user', sessionId: 's1', cwd: RD('root'), timestamp: nowIso, message: { content: '幫我寫交接文件' } }),
+  JSON.stringify({ type: 'custom-title', sessionId: 's1', customTitle: '交接文件摘要' }),
   JSON.stringify({ type: 'assistant', sessionId: 's1', cwd: RD('root'), timestamp: nowIso, message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: handoffPath } }] } })
 ].join('\n') + '\n');
 const CFG = path.join(TMP, 'config.json');
-fs.writeFileSync(CFG, JSON.stringify({ roots: [RD('root')], pinned: [], convoRoots: [RD('convos')] }, null, 2));
+fs.writeFileSync(CFG, JSON.stringify({ roots: [RD('root')], pinned: [], convoRoots: [{ kind: 'claude', dir: RD('convos') }] }, null, 2));
 
 function startServer() {
   const proc = spawn('node', ['server.js'], {
@@ -143,10 +144,17 @@ async function main() {
   browser = await chromium.launch({ executablePath: CHROME, headless: true });
   const ctx = await browser.newContext({ viewport: { width: 400, height: 700 } });
   const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    window.__eventStreams = [];
+    const Native = window.EventSource;
+    window.EventSource = class extends Native {
+      constructor(...args) { super(...args); window.__eventStreams.push(this); }
+    };
+  });
   page.on('console', m => { if (m.type() === 'error') consoleErrors.push(m.text()); });
-  page.on('pageerror', e => pageErrors.push(String(e)));
+  page.on('pageerror', e => { pageErrors.push(String(e)); console.error('PAGE ERROR', String(e)); });
   await page.goto(BASE + '/?mode=panel');
-  await page.waitForFunction(() => window.__dbg && window.__dbg.ready());
+  await page.waitForFunction(() => window.__dbg && window.__dbg.scene().files.length > 0);
   await page.waitForFunction(() => window.__dbg.scene().files.length > 0, null, { timeout: 8000 });
 
   // ---------- 1. layout at 400px: two toolbar rows — search row on top, 類型 dropdown +
@@ -162,7 +170,7 @@ async function main() {
       tree: vis(document.getElementById('tree')), reader: vis(document.getElementById('reader')),
       settings: vis(document.getElementById('settings')), splitter: vis(document.getElementById('splitter')),
       viewBar: vis(document.getElementById('viewBar')),
-      search: box(r('searchBox')), chipSel: box(r('chipSel')), chips: vis(document.getElementById('chips')),
+      search: box(r('searchBox')), chipSel: box(r('chips')), chips: vis(document.getElementById('chips')),
       sortSel: vis(document.getElementById('sortSel')),
       seg: modeSeg && box(modeSeg.getBoundingClientRect()),
       btnModeFiles: box(r('btnModeFiles')), btnTabs: box(r('btnTabs')),
@@ -179,7 +187,7 @@ async function main() {
      'panel hides the folder tree, reader, settings and splitters', layout);
   ok(layout.search && layout.chipSel && layout.seg && layout.btnModeFiles && layout.btnTabs,
      'B: search box, 類型 dropdown and the 檔案|分頁 segment are all rendered', layout);
-  ok(layout.chips === false && layout.sortSel === false, 'B: raw chips row and sort select are out of the panel toolbar',
+  ok(layout.chips === true && layout.sortSel === false, 'B: compact type menu is available and sort select is out of the panel toolbar',
      { chips: layout.chips, sortSel: layout.sortSel });
   ok(layout.search && layout.search.l <= 9 && layout.search.r >= layout.innerW - 9,
      'B: search box spans the full first row', layout.search);
@@ -236,6 +244,10 @@ async function main() {
   });
   ok(cardFit && cardFit.ratio >= 0.85, 'panel: front card nearly fills the narrow column (≥85% of width)', cardFit);
   await page.screenshot({ path: path.join(SHOTS, 'panel-mode.png') });
+  await page.waitForFunction(() => window.__eventStreams.some(s => s.readyState === 1));
+  await page.evaluate(() => window.__eventStreams.at(-1).dispatchEvent(new MessageEvent('convos', { data: '{}' })));
+  await page.waitForSelector('#livePill:visible');
+  ok(await page.textContent('#livePill') === '交付內容有更新・點此載入', 'file updates use delivery wording');
 
   // ---------- 4. tab cards: click sends activate, the page itself never moves
   extCmdLoopStart();
@@ -246,6 +258,17 @@ async function main() {
   ok(pushR.status === 200, 'extension push accepted', pushR.status);
   await page.click('#btnTabs');
   await page.waitForFunction(() => window.__dbg.tabs().active && window.__dbg.tabs().tabs === 2, null, { timeout: 8000 });
+  await page.evaluate(() => window.__eventStreams.at(-1).dispatchEvent(new MessageEvent('convos', { data: '{}' })));
+  await sleep(1000);
+  ok(await page.evaluate(() => window.__dbg.tabs().active && window.__dbg.scene().files.every(f => f.tab) &&
+    getComputedStyle(document.getElementById('livePill')).display === 'none'),
+    'Agent update cannot show a file pill or replace browser cards in tabs mode');
+  await page.locator('#btnTabs').focus();
+  await page.keyboard.press('r');
+  await sleep(500);
+  ok(await page.evaluate(() => window.__dbg.tabs().active && window.__dbg.scene().files.every(f => f.tab)),
+    'refresh in tabs mode keeps the browser cards');
+  await page.screenshot({ path: path.join(SHOTS, 'panel-tabs-updates.png') });
   await page.evaluate(() => { const s = window.__dbg.scene(); s._jumpTo = 0; s.poke(); });
   await page.waitForFunction(() => Math.round(window.__dbg.scene().scrollCur) === 0, null, { timeout: 8000 });
   await sleep(300);   // damping/settle before the click (tabs-e2e does the same)
@@ -266,7 +289,7 @@ async function main() {
   // ---------- 4b. C/E in the panel: tabs mode drops the 類型 dropdown (nothing usable left
   // beside the segment), and Alt+1/Alt+2 are the same switch as the segment buttons.
   const panelC = await page.evaluate(() => ({
-    chipSel: getComputedStyle(document.getElementById('chipSel')).display,
+    chipSel: getComputedStyle(document.getElementById('chips')).display,
     filesOn: document.getElementById('btnModeFiles').classList.contains('on'),
     tabsOn: document.getElementById('btnTabs').classList.contains('on'),
     segVisible: getComputedStyle(document.getElementById('modeSeg')).display !== 'none'
@@ -276,7 +299,7 @@ async function main() {
   await page.keyboard.press('Alt+1');
   await page.waitForFunction(() => !window.__dbg.tabs().active, null, { timeout: 5000 });
   const backC = await page.evaluate(() => ({
-    chipSel: getComputedStyle(document.getElementById('chipSel')).display,
+    chipSel: getComputedStyle(document.getElementById('chips')).display,
     filesOn: document.getElementById('btnModeFiles').classList.contains('on')
   }));
   ok(backC.chipSel !== 'none' && backC.filesOn, 'C/E(panel): Alt+1 back to files, dropdown visible again', backC);
@@ -415,8 +438,34 @@ async function main() {
   // full window: no ⧉ zone at all (the right-column preview has the button instead)
   const fullAi = await ctx.newPage();
   fullAi.on('pageerror', e => pageErrors.push('full2: ' + e));
+  await fullAi.setViewportSize({ width: 1200, height: 900 });
   await fullAi.goto(BASE + '/');
   await fullAi.waitForFunction(() => window.__dbg && window.__dbg.ready());
+  try { await fullAi.waitForSelector('.convo-info', { timeout: 8000 }); }
+  catch (e) {
+    console.log('CONVO DIAGNOSTIC', await fullAi.evaluate(() => ({ classes: document.body.className, tree: document.getElementById('tree').innerText, infos: document.querySelectorAll('.convo-info').length })), await (await fetch(BASE + '/api/convos?days=30')).text());
+    throw e;
+  }
+  const convoRow = fullAi.locator('.convo-info').first().locator('..');
+  ok((await convoRow.textContent()).includes('交接文件摘要') && await convoRow.getAttribute('title') === '幫我寫交接文件',
+    'conversation shows native summary with the original first prompt on hover');
+  await fullAi.locator('.convo-info').first().click();
+  const info = fullAi.locator('.convo-dialog');
+  ok(await info.isVisible() && (await info.textContent()).includes('Session ID: s1') &&
+     (await info.textContent()).includes(RD('convos/project/fake.jsonl')), 'conversation info exposes native ID and original transcript');
+  await fullAi.screenshot({ path: path.join(SHOTS, 'conversation-info.png') });
+  await fullAi.keyboard.press('Escape');
+  await info.waitFor({ state: 'detached' });
+  ok(await info.count() === 0, 'conversation dialog closes with Escape');
+  const fold = fullAi.locator('[data-section="conversations"]');
+  await fold.click();
+  ok(await fold.getAttribute('aria-expanded') === 'false' && await fullAi.locator('#section-conversations').isHidden(),
+    'conversation group collapses');
+  await fullAi.reload();
+  await fullAi.waitForSelector('[data-section="conversations"]');
+  ok(await fold.getAttribute('aria-expanded') === 'false', 'fold state survives reload');
+  await fold.focus(); await fullAi.keyboard.press('Enter');
+  ok(await fold.getAttribute('aria-expanded') === 'true', 'keyboard expands conversation group');
   const fullZones = await fullAi.evaluate(() => ({
     ai: window.__dbg.badgeZone(0.868, 0.93), x: window.__dbg.badgeZone(0.95, 0.93)
   }));

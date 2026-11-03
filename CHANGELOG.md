@@ -1,5 +1,17 @@
 # Changes
 
+## 0.4.0 — 2026-11-03
+
+- Add book-style Markdown reading and optional illustrated and interactive 3D document examples, with bundled three.js assets and no required agent template.
+- Keep reader headers on one line and size/close controls in the same corner across reader sizes; support videos within documents and picture-in-picture playback.
+- Replace the crowded file-type buttons with a persistent multi-select menu. Agent handoff piles always show all delivered files and count only files that still exist.
+- Add collapsible Agent delivery/recent sections, native conversation titles when available, first-prompt tooltips, and conversation details with session IDs and original transcript locations.
+- Reuse browser-tab thumbnail textures when only active state or header text changes, preserving card order and position.
+- Keep file-update notifications out of browser-tab mode and refresh the current mode without switching to files. Use updated delivery wording in Chinese and English.
+- Preserve the loaded side-panel view through health-check failures and recovery, showing a connection status instead of unloading the app.
+
+Validation: 270 unit tests passed, one skipped, no failures. Targeted reader-layout, side-panel, extension side-panel/reconnection, browser-tab, pile and projection checks passed. Existing headless hover/geometry failures documented under 0.3.0 remain separate investigations.
+
 ## 0.3.0 — 2026-11-03
 
 - Start a detached background server by default from the CLI, npm start, and platform launchers. Repeated launches reuse the same port. Foreground mode remains available for development.

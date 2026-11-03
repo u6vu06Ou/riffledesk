@@ -194,6 +194,8 @@ class Acc {
     this.agent = agent; this.id = id; this.project = project;
     this.cwd = '';                  // session cwd, base for relative file paths
     this.title = '';
+    this.firstPrompt = '';
+    this.sessionTitle = '';
     this.auto = false;              // started by a program (claude -p / sdk, codex dispatched by another agent), not typed by a person
     this.started = 0; this.updated = 0;
     this.files = new Map(); // normKey -> { path, firstAt, lastAt, writes }
@@ -225,6 +227,7 @@ async function parseClaude(abs, projectsDir) {
   const slug = path.basename(path.dirname(abs));
   const convos = new Map();     // sessionId -> Acc
   const needTitle = new Set();  // sessionIds still missing a title (per-session, not per-file)
+  const nativeTitles = new Map();
   let sawSession = false;       // before the first session is seen every user line is a title candidate
   const accOf = d => {
     const id = typeof d.sessionId === 'string' && d.sessionId ? d.sessionId : fallbackId;
@@ -234,6 +237,16 @@ async function parseClaude(abs, projectsDir) {
   };
   await scanLines(abs, line => {
     if (line.charCodeAt(0) !== 123) return; // '{'
+    if (line.length <= MAX_TITLE_PARSE && line.includes('"custom-title"')) {
+      try {
+        const d = JSON.parse(line);
+        if (d.type === 'custom-title' && typeof d.sessionId === 'string') {
+          const title = cleanTitle(d.customTitle);
+          if (title) nativeTitles.set(d.sessionId, title);
+        }
+      } catch (_) {}
+      return;
+    }
     const hasTool = (line.includes('file_path') || line.includes('notebook_path')) &&
       (line.includes('"Write"') || line.includes('"Edit"') ||
        line.includes('"MultiEdit"') || line.includes('"NotebookEdit"'));
@@ -276,6 +289,10 @@ async function parseClaude(abs, projectsDir) {
     const tt = cleanTitle(text);
     if (tt) { c.title = tt; needTitle.delete(c.id); }
   });
+  for (const c of convos.values()) {
+    c.firstPrompt = c.title;
+    if (nativeTitles.has(c.id)) c.title = c.sessionTitle = nativeTitles.get(c.id);
+  }
   return [...convos.values()];
 }
 
@@ -548,7 +565,7 @@ async function parsePi(abs, sessionsDir) {
       return;
     }
     if (d.type === 'session_info') {
-      if (!acc.title && typeof d.name === 'string') { const tt = cleanTitle(d.name); if (tt) acc.title = tt; }
+      if (typeof d.name === 'string') { const tt = cleanTitle(d.name); if (tt) acc.sessionTitle = tt; }
       return;
     }
     const m = d.message;
@@ -585,7 +602,7 @@ async function parseGrok(abs, sessionsRoot) {
   const acc = new Acc('grok', path.basename(sidDir), '');
   try {
     const s = JSON.parse(fs.readFileSync(path.join(sidDir, 'summary.json'), 'utf8'));
-    if (s && typeof s.title === 'string') { const tt = cleanTitle(s.title); if (tt) acc.title = tt; }
+    if (s && typeof s.title === 'string') { const tt = cleanTitle(s.title); if (tt) acc.sessionTitle = tt; }
   } catch (_) {}
   await scanLines(abs, line => {
     if (line.charCodeAt(0) !== 123) return;
@@ -664,7 +681,8 @@ async function finalize(c, fileMtimeMs) {
   }));
   files.sort((a, b) => (a.firstAt || 0) - (b.firstAt || 0));
   return {
-    id: c.id, agent: c.agent, title: c.title, project: c.project, auto: !!c.auto,
+    id: c.id, agent: c.agent, title: c.sessionTitle || c.title, firstPrompt: c.firstPrompt || c.title,
+    sessionTitle: c.sessionTitle || '', project: c.project, auto: !!c.auto,
     started: c.started || fileMtimeMs || 0,
     updated: Math.max(c.updated, fileMtimeMs || 0),
     files, fileCount: n
@@ -755,7 +773,11 @@ function discoverFiles(root, cutoffMs = 0) {
 async function convosForFile(f) {
   const key = normKey(f.abs);
   const hit = fileCache.get(key);
-  if (hit && hit.size === f.size && hit.mtimeMs === f.mtimeMs) return hit.convos;
+  let metadataSig = '';
+  if (f.kind === 'grok') {
+    try { const s = fs.statSync(path.join(path.dirname(f.abs), 'summary.json')); metadataSig = s.size + ':' + s.mtimeMs; } catch (_) {}
+  }
+  if (hit && hit.size === f.size && hit.mtimeMs === f.mtimeMs && hit.metadataSig === metadataSig) return hit.convos;
   const parser = PARSERS[f.kind];
   if (!parser) return [];
   let parsed;
@@ -765,9 +787,9 @@ async function convosForFile(f) {
     return [];   // do NOT cache failures — a half-parsed transcript must be retried on the next scan
   }
   const convos = [];
-  for (const c of parsed) convos.push(await finalize(c, f.mtimeMs));
+  for (const c of parsed) convos.push({ ...await finalize(c, f.mtimeMs), transcriptPaths: [f.abs] });
   while (fileCache.size >= FILECACHE_MAX) fileCache.delete(fileCache.keys().next().value);
-  fileCache.set(key, { size: f.size, mtimeMs: f.mtimeMs, convos });
+  fileCache.set(key, { size: f.size, mtimeMs: f.mtimeMs, metadataSig, convos });
   return convos;
 }
 
@@ -796,19 +818,71 @@ async function scan(opts = {}) {
     for (const c of arr) {
       const k = c.agent + ':' + c.id;
       const cur = byId.get(k);
-      if (!cur) { byId.set(k, c); continue; }
+      if (!cur) { byId.set(k, { ...c, files: c.files.slice(), transcriptPaths: c.transcriptPaths.slice() }); continue; }
+      cur.transcriptPaths = [...new Set([...cur.transcriptPaths, ...c.transcriptPaths])];
       const seen = new Set(cur.files.map(f => normKey(f.path)));
       for (const f of c.files) if (!seen.has(normKey(f.path))) cur.files.push(f);
       cur.fileCount = cur.files.reduce((n, f) => n + (f.exists ? 1 : 0), 0);
       cur.files.sort((a, b) => (a.firstAt || 0) - (b.firstAt || 0));
       if (!cur.title && c.title) cur.title = c.title;
+      if (!cur.firstPrompt && c.firstPrompt) cur.firstPrompt = c.firstPrompt;
+      if (c.sessionTitle && (!cur.sessionTitle || c.updated >= cur.updated)) cur.title = cur.sessionTitle = c.sessionTitle;
       if (!c.auto) cur.auto = false;
       if (c.started && (!cur.started || c.started < cur.started)) cur.started = c.started;
       if (c.updated > cur.updated) cur.updated = c.updated;
     }
   }
   const convos = [...byId.values()].filter(c => c.updated >= cutoff && c.files.length > 0);
+  // The session name index changes independently of transcript files. Read it once per root.
+  for (const r of roots.filter(r => r.kind === 'codex')) {
+    const names = await codexNames(path.join(path.dirname(r.dir), 'session_index.jsonl'));
+    const prefix = normKey(r.dir) + '/';
+    for (const c of convos) {
+      if (c.agent !== 'codex' || !c.transcriptPaths.some(p => normKey(p).startsWith(prefix))) continue;
+      if (names.has(c.id)) c.title = c.sessionTitle = names.get(c.id);
+    }
+  }
+  // Claude's optional native index provides short session summaries without an LLM call.
+  const claudeIndexes = new Set(found.filter(f => f.kind === 'claude').map(f => path.join(path.dirname(f.abs), 'sessions-index.json')));
+  for (const abs of claudeIndexes) {
+    try {
+      if (fs.statSync(abs).size > 5 * 1024 * 1024) continue;
+      const index = JSON.parse(await fs.promises.readFile(abs, 'utf8'));
+      for (const e of Array.isArray(index.entries) ? index.entries : []) {
+        const c = byId.get('claude:' + e.sessionId);
+        if (!c || c.sessionTitle || !c.transcriptPaths.some(p => normKey(path.dirname(p)) === normKey(path.dirname(abs)))) continue;
+        const title = cleanTitle(e.summary);
+        if (title) c.title = c.sessionTitle = title;
+      }
+    } catch (_) {} // optional metadata must never block the transcript itself
+  }
   return { convos, transcripts: found.length, ms: Date.now() - t0 };
+}
+
+function metadataFiles(root, found = discoverFiles(root)) {
+  if (root.kind === 'codex') return [path.join(path.dirname(root.dir), 'session_index.jsonl')];
+  if (root.kind === 'claude') return [...new Set(found.map(f => path.join(path.dirname(f.abs), 'sessions-index.json')))];
+  if (root.kind === 'grok') return found.map(f => path.join(path.dirname(f.abs), 'summary.json'));
+  return [];
+}
+
+const nameCache = new Map();
+async function codexNames(abs) {
+  let st;
+  try { st = fs.statSync(abs); } catch (_) { return new Map(); }
+  const hit = nameCache.get(abs);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.names;
+  const names = new Map();
+  try { await scanLines(abs, line => {
+    if (line.length > MAX_TITLE_PARSE) return;
+    try {
+      const d = JSON.parse(line), title = cleanTitle(d.thread_name);
+      if (typeof d.id === 'string' && title) names.set(d.id, title);
+    } catch (_) {}
+  }); } catch (_) { return new Map(); }
+  if (nameCache.size >= 32) nameCache.delete(nameCache.keys().next().value);
+  nameCache.set(abs, { size: st.size, mtimeMs: st.mtimeMs, names });
+  return names;
 }
 
 function mergeId(c) { return c.agent + ':' + c.id; }
@@ -819,6 +893,6 @@ function wroteFile(c, absPath) {
   return c.files.some(f => normKey(f.path) === k);
 }
 
-function clearCache() { fileCache.clear(); }
+function clearCache() { fileCache.clear(); nameCache.clear(); }
 
-module.exports = { scan, defaultRoots, normalizeRoots, normKey, mergeId, wroteFile, clearCache, discoverFiles, KIND_LABEL };
+module.exports = { scan, defaultRoots, normalizeRoots, normKey, mergeId, wroteFile, clearCache, discoverFiles, metadataFiles, KIND_LABEL };

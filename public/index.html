@@ -108,9 +108,15 @@
        右邊的檔案／分頁切換鈕才不會隨模式左右跳 */
   }
   /* chips 放不下時橫向捲（滾輪可捲），兩端淡出提示還有 */
-  #chips { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; flex: 0 1 auto; min-width: 80px;
-    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--fl, 0px), #000 calc(100% - var(--fr, 0px)), transparent 100%);
-            mask-image: linear-gradient(90deg, transparent 0, #000 var(--fl, 0px), #000 calc(100% - var(--fr, 0px)), transparent 100%); }
+  #chips { position: relative; flex: 0 1 auto; min-width: 120px; max-width: 290px; }
+  #chips summary { cursor: pointer; border: 1px solid var(--input-border); border-radius: 18px;
+    padding: 6px 12px; background: var(--input-bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chips .type-choices { position: absolute; top: calc(100% + 8px); left: 0; width: min(310px, calc(100vw - 24px));
+    box-sizing: border-box; padding: 12px; border: 1px solid var(--panel-border); border-radius: 10px;
+    background: var(--panel-bg); box-shadow: 0 10px 32px #0003; display: grid; grid-template-columns: 1fr 1fr; gap: 7px;
+    max-height: calc(100vh - 110px); overflow-y: auto; }
+  #chips .type-choices p { grid-column: 1 / -1; margin: 0 0 5px; color: var(--panel-dim); font-size: 12px; }
+  #chips .type-choices .chip { text-align: left; border-radius: 6px; }
   #chips::-webkit-scrollbar { display: none; }
   /* 檔案／分頁 兩段式切換：一個外框包兩顆鈕，現在的模式亮底 */
   #modeSeg { display: flex; flex: none; border: 1px solid var(--input-border); border-radius: 20px;
@@ -227,6 +233,18 @@
   /* 對話區的群組摺疊標題（近期／更早）：可點、右側帶則數 */
   #tree .sec.gsec { cursor: pointer; display: flex; align-items: baseline; gap: 4px; padding-right: 6px; }
   #tree .sec.gsec:hover { color: var(--fg); }
+  #tree .fold-head { width: 100%; border: 0; border-radius: 0; background: none; text-align: left; font-family: inherit; }
+  #tree .fold-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .convo-info { flex: none; padding: 0 4px; border: 0; background: none; color: var(--fg-dim); cursor: pointer; }
+  .convo-info:hover, .convo-info:focus-visible { color: var(--accent); }
+  .convo-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 40px)); max-height: 85vh; overflow: auto; background: var(--panel-bg); color: var(--fg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 24px; }
+  .convo-dialog::backdrop { background: #0008; }
+  .convo-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; user-select: text; }
+  .convo-dialog footer { display: flex; flex-wrap: wrap; gap: 8px; }
+  .convo-dialog button { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--btn-bg); color: var(--fg); cursor: pointer; }
+  .convo-dialog button:hover { background: var(--hover); }
+  .crow .nm { flex: 1; min-width: 0; }
+  .crow .tw.leaf { display: none; }
   #tree .sec.gsec .gcar { width: 10px; flex: none; }
   #tree .sec.gsec .gcnt { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none; }
   .trow {
@@ -306,7 +324,8 @@
   #reader.open { display: flex; }
   #reader.show { opacity: 1; }
   #readerHeader {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 7px 10px; flex: none;
+    position: relative; height: 41px; box-sizing: border-box;
+    display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 8px; padding: 7px 96px 7px 10px; flex: none;
     background: var(--panel-head); border-bottom: 1px solid var(--panel-border); user-select: none;
   }
   #readerKind { font-size: 11px; color: #fff; border-radius: 4px; padding: 2px 7px;
@@ -315,39 +334,41 @@
   /* 檔名與 meta 要可框選複製（貼給 AI 用）；讀取列本身維持 user-select:none */
   #readerHeadText, #readerTitle, #readerMeta { user-select: text; cursor: text; }
   #readerTitle { font-weight: 650; overflow: hidden; white-space: nowrap;
-    text-overflow: ellipsis; min-width: 52px; color: var(--heading); }
+    text-overflow: ellipsis; min-width: 0; color: var(--heading); }
   #readerBtns button { padding: 0 5px; }
   #readerMeta { color: var(--panel-dim); font-size: 12px; flex: none; min-width: 0; }
 
-  /* 分頁預覽的標題列：標題自己一列（最多 2 行，超過省略），網域＋網址在第二列，
-     網址單行省略、滑過看全文、點了複製。任何欄寬都不會被右緣裁掉。 */
+  /* Every reader uses one header row; secondary controls move to More in narrow panes. */
   #reader { container-type: inline-size; }
-  #readerHeader.tabhead { align-items: flex-start; }
-  #readerHeader.tabhead #readerHeadText { flex-direction: column; align-items: stretch;
-    gap: 3px; flex: 1 1 160px; }
-  #readerHeader.tabhead #readerTitle { white-space: normal; overflow-wrap: anywhere;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-width: 0; }
+  #readerHeader.tabhead #readerTitle { flex: 1; }
   #readerHeader.tabhead #readerMeta { display: flex; align-items: baseline; gap: 6px;
-    max-width: 100%; min-width: 0; }
-  #readerHeader.tabhead .tabdomain { flex: none; max-width: 45%; overflow: hidden;
+    flex: 0 1 35%; max-width: 35%; min-width: 90px; }
+  #readerHeader.tabhead .tabdomain { flex: none; max-width: calc(100% - 18px); overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
-  #readerHeader.tabhead .taburl { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  #readerHeader.tabhead .taburl { flex: 1 1 auto; min-width: 12px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
     text-decoration: underline dotted; }
   #readerHeader.tabhead .taburl:hover { color: var(--fg); }
-  /* 窄欄（<520px）：第 1 列＝TAB 徽章＋右上角圖示鈕，標題與網址整組換到下面吃滿寬——
-     標題優先佔寬、網域也不被擠成碎片，兩者永不互相重疊。 */
-  @container (max-width: 520px) {
-    #readerHeader.tabhead #readerKind { order: 1; }
-    #readerHeader.tabhead #readerBtns { order: 2; margin-left: auto; }
-    #readerHeader.tabhead #readerHeadText { order: 3; flex-basis: 100%; }
+  @container (max-width: 1050px) {
+    #readerHeader #readerMeta { display: none; }
+    #readerBtns :is(#btnCopyPath, #btnEdit, #btnSource, #btnRevise, #btnWrap, #codeThemeMini, #btnSave, #btnMdPreview) { display: none; }
+    #readerBtns #btnRun { font-size: 0; width: 27px; padding: 0; }
+    #readerBtns #btnRun::before { content: '▶'; font-size: 13px; }
+    #readerBtns #btnRun.on::before { content: '■'; }
   }
-  #readerBtns { margin-left: auto; display: flex; gap: 4px; flex: none; }
-  #readerBtns button {
+  @container (max-width: 360px) {
+    #readerBtns #btnFind { display: none; }
+    #readerHeader #readerKind { display: none; }
+  }
+  #readerBtns { margin-left: auto; display: flex; flex: none; flex-wrap: nowrap; gap: 4px; }
+  #readerWindowControls { position: absolute; top: 7px; right: 10px; display: flex; gap: 4px; }
+  #readerWindowControls #btnSize { width: 44px; flex: none; font-variant-numeric: tabular-nums; }
+  #readerWindowControls #btnClose { width: 27px; flex: none; }
+  #readerBtns button, #readerWindowControls button {
     border: 0; background: var(--btn-bg); color: var(--btn-fg); min-width: 27px; height: 26px;
     border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 6px;
   }
-  #readerBtns button:hover { background: var(--btn-hover); }
+  #readerBtns button:hover, #readerWindowControls button:hover { background: var(--btn-hover); }
   #readerBtns button:disabled { opacity: .45; cursor: default; }
 
   /* ------------------------------------------------ 改版模式（iframe＋改動清單） */
@@ -469,7 +490,26 @@
   #readerBody img.reader-img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
   #readerBody video.reader-video { width: 100%; max-height: 100%; display: block; margin: 0 auto; background: #000; }
   #readerBody iframe { width: 100%; height: 100%; border: 0; background: #fff; }
-  #readerBody.md h1, #readerBody.md h2 { border-bottom: 1px solid var(--panel-border); padding-bottom: 4px; }
+  /* A1: the original Markdown, presented as a quiet reading page. No rewrite. */
+  #readerBody.md {
+    padding: clamp(24px, 4cqi, 54px) max(22px, calc((100% - 760px) / 2));
+    font-size: 17px; line-height: 1.95; overflow-wrap: anywhere;
+  }
+  #readerBody.md h1 { font-size: clamp(26px, 4cqi, 40px); margin: 0 0 1em; letter-spacing: -.025em; }
+  #readerBody.md h2 { margin: 2.2em 0 .8em; font-size: 22px; padding-top: .65em; border-top: 1px solid var(--panel-border); }
+  #readerBody.md h3 { margin-top: 1.8em; font-size: 19px; }
+  #readerBody.md p, #readerBody.md ul, #readerBody.md ol { margin: 1em 0; }
+  #readerBody.md li { margin: .35em 0; }
+  #readerBody.md blockquote {
+    margin: 1.6em 0; padding: .85em 1.2em; border-left: 3px solid #718359;
+    color: var(--panel-fg); background: color-mix(in srgb, var(--panel-head) 85%, #718359 15%);
+  }
+  #readerBody.md table { display: block; max-width: 100%; overflow-x: auto; font-size: 14px; line-height: 1.65; }
+  #readerBody.md td, #readerBody.md th { padding: 12px 16px; white-space: normal; min-width: 110px; }
+  #readerBody.md img { max-width: 100%; height: auto; }
+  #readerBody.html-running { display: flex; flex-direction: column; min-height: 0; }
+  #readerBody.html-running iframe { flex: 1; min-height: 120px; }
+  #readerBody .html-load-status { flex: none; padding: 10px 12px; color: var(--panel-dim); font-size: 13px; }
   #readerBody code { background: var(--code-bg); border-radius: 4px; padding: 1px 4px; }
   #readerBody pre code { background: none; padding: 0; }
   #readerBody .msg-dim { color: var(--panel-dim); }
@@ -548,7 +588,8 @@
   #projRecent .proj-row .fico { opacity: .8; }
   /* AI 整理的疊（pile）：左欄一列一疊，標題＋檔數＋時間 */
   #projPiles .pile-row .fico { opacity: .8; }
-  #projPiles .pile-row .cnt { margin-left: auto; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+  #projPiles .pile-row .cnt { margin-left: auto; color: var(--cnt); font-variant-numeric: tabular-nums; }
+  #projPiles .pile-row .cnt.zero { color: var(--cnt-zero); }
   #projPiles .pile-row .pile-when { color: var(--fg-faint); font-size: 11px; }
   #pathBar .pile-back { flex: none; border: 1px solid var(--border); background: var(--bar); color: var(--fg-dim);
     border-radius: 6px; padding: 1px 8px; cursor: pointer; font-size: 12px; }
@@ -633,8 +674,8 @@
   body.panel-mode #btnRefresh, body.panel-mode #btnSettings, body.panel-mode #btnViewHome { display: none; }
   body.panel-mode #searchBox { flex: 1 1 100%; min-width: 0; width: 100%; order: 1; }
   /* 類型 chips 收起來變下拉；下拉吃第 2 列剩下的寬度 */
-  body.panel-mode #chips { display: none; }
-  body.panel-mode #chipSel { display: block; order: 2; flex: 1 1 auto; min-width: 0;
+  body.panel-mode #chips { display: block; order: 2; flex: 1 1 auto; max-width: none; min-width: 0; }
+  body.panel-mode #chipSel { display: none; order: 2; flex: 1 1 auto; min-width: 0;
     background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border);
     border-radius: 6px; padding: 4px 6px; font-size: 12px; }
   body.panel-mode #chipSel:disabled { opacity: .45; }
@@ -794,6 +835,8 @@
       <select id="codeThemeMini" hidden data-i18n-title="codeThemeTitle"></select>
       <button id="btnWrap" hidden data-i18n-title="wrapTitle">↩</button>
       <button id="btnMore" data-i18n-title="moreTitle">⋯</button>
+    </div>
+    <div id="readerWindowControls">
       <button id="btnSize" title="切換閱讀區大小：1/3 → 2/3 → 全螢幕 → 1/3">1/3</button> <!-- zh-scan-ok: title 佔位，main.js 每次切語言用 i18n 字串重設 -->
       <button id="btnClose" data-i18n-title="closeTitle" title="放回（Esc）">✕</button>
     </div>

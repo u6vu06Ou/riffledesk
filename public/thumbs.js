@@ -375,7 +375,15 @@ export function tabMetaText(file) {
   const parts = [file.localName || tabDomain(file.tab.url)];
   if (file.mtime) parts.push(fmtDate(file.mtime));
   parts.push(KIND_LABEL.tab);
+  if (file.tab.active) parts.push(t('tabsActiveTab'));
   return parts.join(' · ');
+}
+
+// Activation/title/date changes only touch the header; keep the decoded page image.
+export function refreshTabHeader(canvas, file) {
+  const ctx = canvas.getContext('2d');
+  drawTab(ctx, canvas.width, file, TAB_HEAD_SCALE);
+  drawTabBadges(ctx, canvas.width, canvas.height, { ai: panelAiBadge() });
 }
 function loadImg(src) {
   return new Promise((res, rej) => {
@@ -489,11 +497,6 @@ function paintTabFallbackBody(ctx, W, H, file, tabH, favImg) {
     y += 28 + lines.length * 34;
   }
 
-  if (file.tab.active) {
-    ctx.font = `26px ${fontStack()}`;
-    ctx.fillStyle = theme().dim;
-    ctx.fillText(t('tabsActiveTab'), PAD, Math.min(y + 26, H - 30));
-  }
 }
 
 // 說明卡面（瀏覽器內建頁／休眠分頁／本機檔讀不到）：大圖示＋一句標題＋小字說明。
@@ -641,11 +644,6 @@ function paintTabOgBody(ctx, W, H, file, tabH, ogImg) {
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(0, tabH + imgH + 1); ctx.lineTo(W, tabH + imgH + 1); ctx.stroke();
   const y = paintTabTextBlock(ctx, W, H, tabCardModel(file), tabH + imgH + 20, PAD);
-  if (file.tab.active) {
-    ctx.font = `26px ${fontStack()}`;
-    ctx.fillStyle = theme().dim;
-    ctx.fillText(t('tabsActiveTab'), PAD, Math.min(y + 26, H - 30));
-  }
 }
 
 async function buildTabCanvas(file) {

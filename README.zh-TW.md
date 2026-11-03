@@ -48,6 +48,8 @@ RiffleDesk 就是補這個洞的介面：
 
 **疊。** `riffledesk show a.md b.md --title "…"` 把一組相關的檔一次交成一疊卡：只有這幾張，同資料夾的其他檔不會冒出來。它只跳通知、不切畫面；左欄留著最近的疊，`/?pile=<id>` 能重開。也可以 `riffledesk search … --json | riffledesk show`。
 
+AI 整理的疊會完整顯示交付檔案，不受資料夾類型篩選影響。類型按鈕會標示「此疊顯示全部」；離開疊後恢復原本的資料夾篩選。疊旁數字表示仍存在的檔案數，只有空疊的數字才反灰。
+
 <p align="center"><img src="docs/media/06-projection-notice.png" alt="背景分頁壓著被投影的檔，並跳系統通知" width="900"></p>
 
 **其他：** AI 對話清單（「這檔是哪則對話寫的？」）、釘選資料夾、把疑似金鑰的檔標出來的密鑰掃描，還有沒動作就完全停掉的 idle render loop。
@@ -86,6 +88,12 @@ riffledesk --help
 `open` 打 `POST /api/project` 並帶 `X-RiffleDesk-CLI: 1` 標頭（瀏覽器的跨站 POST 偽造不出來），回報推給幾個分頁；沒有分頁、或伺服器舊到沒這支端點時，改用預設瀏覽器開 `/?open=<路徑>`。兩個子命令都會先探測本機埠，沒人回應就背景無頭起一台。輸出全英文方便腳本解析；`search` 沒結果 exit 1、參數錯 exit 2。
 
 教 agent 這套流程的 skill 放在 [`skills/riffledesk/`](skills/riffledesk/)。完整端點清單在 [docs/API.md](docs/API.md)。
+
+一般 Markdown 會自動套用書頁式閱讀排版，原稿不變。HTML 可以在同一份文件裡混合文字、插圖、圖解與可操作的 three.js 圖；程式由使用者按下執行才啟用。詳見[交付能力與可選範例](skills/riffledesk/DELIVERABLES.md)，不需要另外安裝技能，也不強制 agent 使用模板。
+
+工具列的「類型」選單可直接複選，例如同時顯示 MD 與 TXT，重整後保留選擇。「HTML／互動 3D」包含 HTML 網頁；單獨的 JavaScript 仍屬程式碼。這裡只篩選顯示檔案，不限制 AI 產出格式。
+
+左欄群組可以收合。對話優先顯示工具已儲存的標題或摘要，滑過可看使用者的第一句話，資訊按鈕可複製 Session ID 並找到原始紀錄。網頁模式不會被新交付通知切回檔案；連線檢查失敗時保留卡片與位置，恢復連線也不重載畫面。
 
 ## 隱私
 

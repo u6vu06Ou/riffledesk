@@ -151,9 +151,9 @@ async function main() {
     const sel = document.getElementById('sortSel');
     const btn = document.getElementById('btnTabs');
     if (!sel || !btn) return null;
-    return { sameRow: Math.abs(sel.offsetTop - btn.offsetTop) < 4, rightOf: btn.offsetLeft > sel.offsetLeft };
+    return { sameRow: Math.abs(sel.offsetTop - btn.offsetTop) < 4, beforeSort: btn.getBoundingClientRect().right <= sel.getBoundingClientRect().left };
   });
-  ok(btnPos && btnPos.sameRow && btnPos.rightOf, '「網頁」按鈕在排序選單右邊同一列', btnPos);
+  ok(btnPos && btnPos.sameRow && btnPos.beforeSort, 'mode selector stays before sorting on the same toolbar row', btnPos);
   const tabsBtnText = await page.evaluate(() => document.getElementById('btnTabs').textContent.trim());
   ok(tabsBtnText === '網頁', 'mode segment right half reads 「網頁」', tabsBtnText);
 
@@ -238,6 +238,20 @@ async function main() {
   ok(afterPush.len === 3 && afterPush.kinds.every(k => k === 'tab'), 'tab list becomes 3 cards', afterPush);
   ok(afterPush.firstId === 101, 'most recently used tab is the front card', afterPush.firstId);
   ok(await page.evaluate(() => window.__dbg.tabs().extAlive), 'server considers the extension alive');
+  await page.waitForFunction(() => window.__dbg.scene().texCache.has('tab://101'));
+  let repeatShotRequests = 0;
+  const countShot = req => { if (req.url().includes('/api/tabs/shot?')) repeatShotRequests++; };
+  page.on('request', countShot);
+  await page.evaluate(() => { window._shotTexture = window.__dbg.scene().texCache.get('tab://101').tex; });
+  for (let i = 1; i <= 6; i++) {
+    await extPushTabs(TABS.map(tb => ({ ...tb, shot: null, active: tb.id === (i % 2 ? 102 : 101),
+      lastAccessed: tb.id === 101 ? T0 + i * 1000 : tb.lastAccessed })));
+    await page.waitForFunction(stamp => window.__dbg.scene().view.find(f => f.tab.id === 101).mtime === stamp, T0 + i * 1000);
+  }
+  ok(await page.evaluate(() => window.__dbg.scene().texCache.get('tab://101').tex === window._shotTexture) && repeatShotRequests === 0,
+    'six switches reuse screenshot texture without refetching or decoding', { repeatShotRequests });
+  page.off('request', countShot);
+  await extPushTabs(TABS.map(tb => ({ ...tb, shot: null })));
 
   // ---------- 4. cards WITHOUT a screenshot must still have a real face, and the
   // docs screenshot is taken with such a card in front (dark theme, preview button visible)
@@ -415,6 +429,38 @@ async function main() {
   ok(await page.evaluate(m => window.__dbg.scene().lastFolderSwitchMs === m, switchMsBefore),
     'identical push does not rebuild the stack');
   ok((await frontTabId()) === anchorId, 'identical push keeps the position');
+
+  // Switching between already captured tabs must reuse decoded images and GPU textures.
+  await page.waitForFunction(() => window.__dbg.scene().texCache.has('tab://207'));
+  await page.evaluate(() => {
+    const s = window.__dbg.scene();
+    window._tabTextureBefore = s.texCache.get('tab://207').tex;
+    window._unchangedTabBefore = s.view.find(f => f.tab.id === 209);
+    window._headerBefore = window._tabTextureBefore.version;
+    window._activationUpdateMs = [];
+    const update = s.updateFilesInPlace.bind(s);
+    s.updateFilesInPlace = (...args) => {
+      const start = performance.now();
+      const out = update(...args);
+      window._activationUpdateMs.push(performance.now() - start);
+      return out;
+    };
+  });
+  for (let i = 0; i < 6; i++) {
+    await extPushTabs(MANY.map(tb => ({ ...tb, active: tb.id === (i % 2 ? 208 : 207),
+      lastAccessed: tb.id === 207 ? T0 + i * 1000 : tb.lastAccessed })));
+    await page.waitForFunction(stamp => window.__dbg.scene().view.find(f => f.tab.id === 207).mtime === stamp, T0 + i * 1000);
+  }
+  await page.waitForFunction(() => window.__dbg.scene().view.find(f => f.tab.id === 207).mtime === Date.parse('2026-10-20T09:00:00Z') + 5000);
+  const reuse = await page.evaluate(() => {
+    const s = window.__dbg.scene();
+    return { sameTexture: s.texCache.get('tab://207').tex === window._tabTextureBefore,
+      updatedHeader: window._tabTextureBefore.version > window._headerBefore,
+      sameOtherCard: s.view.find(f => f.tab.id === 209) === window._unchangedTabBefore,
+      front: s.view[Math.round(s.scrollCur)].tab.id, updateMs: window._activationUpdateMs };
+  });
+  ok(reuse.sameTexture && reuse.updatedHeader && reuse.sameOtherCard && reuse.front === anchorId,
+    'repeated tab activation keeps images, unchanged cards and stack position; updates header only', reuse);
 
   // 5 consecutive pushes of "a card's title changed" — the view must stay on the same tab
   for (let i = 0; i < 5; i++) {

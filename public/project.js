@@ -18,6 +18,7 @@
 //    to one beep per SOUND_GAP_MS; later notifications stay silent.
 //  - settings + notification state persist per browser (localStorage, try/catch).
 import { t } from './i18n.js';
+import { foldSection } from './sections.js';
 
 const MERGE_MS = 3000;
 const SOUND_GAP_MS = 10000;
@@ -132,10 +133,7 @@ function renderRecent() {
   if (!listEl) return;
   listEl.innerHTML = '';
   if (!recent.length) return;
-  const sec = document.createElement('div');
-  sec.className = 'sec';
-  sec.textContent = t('projSec');
-  listEl.appendChild(sec);
+  const body = foldSection(listEl, t('projSec'), 'projected');
   for (const r of recent) {
     const row = document.createElement('div');
     row.className = 'trow crow proj-row';
@@ -148,7 +146,7 @@ function renderRecent() {
     nm.textContent = r.name + (r.line ? ':' + r.line : '');
     row.append(icon, nm);
     row.addEventListener('click', () => openPath(r.path, r.line));
-    listEl.appendChild(row);
+    body.appendChild(row);
   }
 }
 function pushRecent(rec) {
@@ -188,10 +186,7 @@ function renderPiles() {
   if (!pileEl) return;
   pileEl.innerHTML = '';
   if (!piles.length) return;
-  const sec = document.createElement('div');
-  sec.className = 'sec';
-  sec.textContent = t('pileSec');
-  pileEl.appendChild(sec);
+  const body = foldSection(pileEl, t('pileSec'), 'deliveries');
   for (const p of piles) {
     const row = document.createElement('div');
     row.className = 'trow crow pile-row';
@@ -204,15 +199,16 @@ function renderPiles() {
     nm.className = 'nm';
     nm.textContent = p.title;
     const cnt = document.createElement('span');
-    cnt.className = 'cnt';
+    cnt.className = 'cnt' + (p.count === 0 ? ' zero' : '');
     cnt.textContent = String(p.count);
+    cnt.title = p.count === 0 ? t('pileNone') : t('fileCount', { n: p.count });
     const when = document.createElement('span');
     when.className = 'pile-when';
     when.textContent = fmtPileTime(p.at);
     row.append(icon, nm, cnt, when);
     row.addEventListener('click', () => openPile(p.id, row));
     if (deps && deps.attachPileRow) deps.attachPileRow(row, p.id);
-    pileEl.appendChild(row);
+    body.appendChild(row);
   }
 }
 function pushPile(rec) {
@@ -220,6 +216,18 @@ function pushPile(rec) {
   mountPiles();
 }
 export function restorePiles() { if (pileEl) mountPiles(); }
+
+// Opening/reloading a pile verifies which delivered files still exist.
+export function updatePileCount(id, count) {
+  const p = piles.find(p => p.id === id);
+  if (p) p.count = count;
+  const row = pileEl && [...pileEl.querySelectorAll('.pile-row')].find(r => r.dataset.pile === id);
+  const cnt = row && row.querySelector('.cnt');
+  if (!cnt) return;
+  cnt.textContent = String(count);
+  cnt.classList.toggle('zero', count === 0);
+  cnt.title = count === 0 ? t('pileNone') : t('fileCount', { n: count });
+}
 
 async function fetchPiles() {
   try {

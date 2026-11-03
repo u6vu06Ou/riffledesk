@@ -2,7 +2,8 @@
 // 職責：
 //  1. 內容本體＝本機 RiffleDesk 的 ?mode=panel 頁，用 iframe 載。
 //     server 偵測：fetch 輕量的 /manifest.webmanifest，通過就載 iframe；
-//     沒在跑就顯示啟動教學並重試（掉線中 3 秒一次、連線中 15 秒一次慢速健檢）。
+//     首次沒在跑才顯示啟動教學；已載入後斷線保留原畫面並重試。
+//     掉線中 3 秒一次、連線中 15 秒一次慢速健檢。
 //     iframe 設了 src 但沒觸發 load（例如被 CSP 擋）也會退回教學頁，不會假裝在線。
 //  2. iframe → 背景 worker 的中繼：面板頁點了檔案卡會 postMessage 上來
 //     {rifflePanel:'file-opened', path, delivered}（嚴格驗：必須是 iframe 自己、
@@ -10,6 +11,7 @@
 //     背景回 ok:true 才回 iframe open-ack——沒 ack 的 700ms 後面板頁自己補開分頁。
 const frame = document.getElementById('frame');
 const down = document.getElementById('down');
+const connection = document.getElementById('connection');
 const api = globalThis.browser ?? globalThis.chrome;
 if (typeof RD_I18N !== 'undefined') RD_I18N.applyStatic();
 const ti = (typeof RD_I18N !== 'undefined' && RD_I18N.t) || (k => k);
@@ -48,6 +50,7 @@ async function serverUp() {
 
 function setDown() {
   up = false;
+  connection.hidden = true;
   if (frame.src && frame.src !== 'about:blank') { try { frame.src = 'about:blank'; } catch (_) { /* 算了 */ } }
   frameLoaded = false;
   frame.style.display = 'none';
@@ -59,11 +62,16 @@ async function tick() {
   ticking = true;
   try {
     let ok = await serverUp();
-    if (up && ok && !frameLoaded && frameSrcAt && Date.now() - frameSrcAt > 4000) {
+    if (up && ok && !frameLoaded && frameSrcAt && Date.now() - frameSrcAt > 15000) {
       // server 活著但 iframe 始終沒 load（多半被擋）——當掉線處理，退回教學頁繼續重試
       ok = false;
     }
-    if (ok && !up) {
+    if (frameLoaded) {
+      // A failed health probe must never navigate away from a working iframe.
+      // Its EventSource reconnects on its own, preserving mode, cards and scroll.
+      up = ok;
+      connection.hidden = ok;
+    } else if (ok && !up) {
       up = true;
       frameLoaded = false;
       frameSrcAt = Date.now();

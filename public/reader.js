@@ -223,7 +223,7 @@ export class Reader {
     }
     this.btnFind.disabled = !this.file || this.file.kind === 'image' || this.file.kind === 'pdf' || this.file.kind === 'sheet' || this.file.kind === 'video';
     // 編輯中：把不相關的鈕收起來，讓檔名與存檔鈕有空間
-    document.getElementById('btnMore').hidden = on;
+    document.getElementById('btnMore').hidden = false;
     document.getElementById('btnSize').hidden = on;
     if (on) { this.btnRun.hidden = true; this.btnSource.hidden = true; this.btnWrap.hidden = true; this.btnRevise.hidden = true; }
   }
@@ -387,10 +387,15 @@ export class Reader {
         this.el.classList.add('show');
       }
     }
-    if (!on) this.el.classList.remove('show');
+    if (!on) this.hide();
   }
   show() { this.el.classList.add('show'); }
-  hide() { this.el.classList.remove('show'); this.clearLineMark(); }
+  hide() {
+    this.el.classList.remove('show'); this.clearLineMark();
+    ++this.openGen; // A pending HTML load must not restart after the reader closes.
+    clearTimeout(this.htmlLoadTimer);
+    this.body.querySelectorAll('iframe[data-running-html]').forEach(frame => frame.remove());
+  }
   clearLineMark() {
     const m = this.body.querySelector('.proj-line');
     if (m) m.remove();
@@ -757,6 +762,7 @@ export class Reader {
 
   // loads the file body; resolves once the content is in the DOM
   async open(file) {
+    clearTimeout(this.htmlLoadTimer);
     // 換檔時把改版模式收掉（改版中的畫面由 revise.js 自己重畫）
     if (this.revise && this.revise.active() && (!this.revise.file || this.revise.file.path !== file.path)) {
       this.revise.detach();
@@ -837,11 +843,27 @@ export class Reader {
           const raw = await apiJson('/api/rawopen?path=' + encodeURIComponent(file.path));
           if (stale() || !raw.ok) return;
           el.innerHTML = '';
+          el.classList.add('html-running');
+          const status = document.createElement('div');
+          status.className = 'html-load-status';
+          status.setAttribute('role', 'status');
+          status.textContent = t('htmlLoading');
+          el.appendChild(status);
           const ifr = document.createElement('iframe');
+          ifr.dataset.runningHtml = '1';
           ifr.setAttribute('sandbox', 'allow-scripts allow-popups allow-modals allow-downloads');
           ifr.title = t('viewPreviewTitle');
           // 不把本機檔案路徑（iframe 自己的網址）洩給頁面抓的外部資源
           ifr.setAttribute('referrerpolicy', 'no-referrer');
+          const timer = setTimeout(() => {
+            if (!stale() && status.isConnected) status.textContent = t('htmlLoadingSlow');
+          }, 8000);
+          this.htmlLoadTimer = timer;
+          ifr.addEventListener('load', () => { clearTimeout(timer); status.remove(); }, { once: true });
+          ifr.addEventListener('error', () => {
+            clearTimeout(timer);
+            if (!stale()) status.textContent = t('htmlLoadingFailed');
+          }, { once: true });
           ifr.src = raw.url;
           el.appendChild(ifr);
         } else {

@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { P, P_RANGES, P_DEFAULTS, TOOLBAR_H, toolbarH, clamp, damp, easeInOutCubic, saveParams, kindOf, shortHash, theme, themeGen } from './util.js';
 import { t } from './i18n.js';
-import { placeholderCanvas, sharedPlaceholderCanvas, requestThumb, pumpThumbs, thumbQueueSize } from './thumbs.js';
+import { placeholderCanvas, sharedPlaceholderCanvas, requestThumb, pumpThumbs, thumbQueueSize, refreshTabHeader } from './thumbs.js';
 
 const CARD_W = 4.0, CARD_H = 2.5;       // 寬卡 1.6:1，與縮圖畫布 1280×800 同比例（卡面不會被拉歪）
 const POOL_N = 30;                      // pool slots (virtual window + margin)
@@ -547,16 +547,29 @@ export class StackScene {
     // 卡面「畫得出來的」東西才算：標題／網址／favicon／截圖版本／頁面文字，
     // 加上檔名列上的日期與「目前分頁」標記（這兩個也只有重畫才會變）。
     // 長字串（favicon data URL、頁面文字）先收成雜湊再比。
-    const sig = f => f ? [f.name, f.tab && f.tab.title, shortHash(f.tab && f.tab.url),
+    const bodySig = f => f ? [shortHash(f.tab && f.tab.url),
       shortHash(f.tab && f.tab.fav), f.tab && (f.tab.hasShot ? 1 : 0), f.tab && f.tab.shotVer,
-      shortHash(f.tab && f.tab.text), f.mtime, f.tab && (f.tab.active ? 1 : 0),
+      shortHash(f.tab && f.tab.text), shortHash(f.tab && f.tab.desc),
+      f.tab && f.tab.hasOg, f.tab && f.tab.ogVer, f.tab && f.tab.discarded,
       f.localPath || '', f.builtin ? 1 : 0].join('\u0000') : '';
+    const sig = f => f ? bodySig(f) + '\u0000' + [f.name, f.mtime, f.tab && f.tab.active].join('\u0000') : '';
     const oldByPath = new Map(oldView.map(f => [f.path, sig(f)]));
+    const oldFiles = new Map(oldView.map(f => [f.path, f]));
+    const bodyChanged = [];
     const changed = [];
-    for (const f of files) {
+    files = files.map(f => {
       const before = oldByPath.get(f.path);
-      if (before !== undefined && before !== sig(f)) changed.push(f.path);
-    }
+      if (before === sig(f)) return oldFiles.get(f.path);
+      if (before !== undefined) {
+        changed.push(f.path);
+        const e = this.texCache.get(f.path);
+        if (f.tab && !f.tab.note && bodySig(oldFiles.get(f.path)) === bodySig(f) && e) {
+          refreshTabHeader(e.tex.image, f);
+          e.tex.needsUpdate = true;
+        } else bodyChanged.push(f.path);
+      }
+      return f;
+    });
 
     const filtered = keepOrder
       ? this.nameFilterMatch(files)
@@ -568,15 +581,18 @@ export class StackScene {
     this.moreLoader = null;
     this.loadingMore = false;
 
+    const sameOrder = filtered.length === oldView.length && filtered.every((f, i) => f.path === oldView[i].path);
     const at = anchorPath ? filtered.findIndex(f => f.path === anchorPath) : -1;
     const idx = at >= 0 ? at : clamp(oldFocus, 0, Math.max(0, filtered.length - 1));
-    this.scrollCur = idx;
-    this.scrollTarget = idx;
-    this.scrollVel = 0;
-    this.hoverD = null;
+    if (!sameOrder) {
+      this.scrollCur = idx;
+      this.scrollTarget = idx;
+      this.scrollVel = 0;
+      this.hoverD = null;
+    }
 
     // 內容變了的卡：丟掉舊貼圖，卡片會顯示新 placeholder 再排一次真縮圖
-    for (const p of changed) {
+    for (const p of bodyChanged) {
       const e = this.texCache.get(p);
       if (e) { e.tex.dispose(); this.texCache.delete(p); }
     }
@@ -589,7 +605,7 @@ export class StackScene {
         this.texCache.delete(p);
       }
     }
-    const changedSet = new Set(changed);
+    const changedSet = new Set(bodyChanged);
     for (const s of this.slots) if (s.file && changedSet.has(s.file.path)) s.thumbReqPath = null;
 
     this.rebindAll(true);
@@ -1424,6 +1440,8 @@ export class StackScene {
       for (const s of this.slots) if (s.thumbReqPath === path) s.thumbReqPath = null;
       return;
     }
+    const current = this.view.find(f => f.path === path);
+    if (current && current.tab && !current.tab.note) refreshTabHeader(canvasEl, current);
     const old = this.texCache.get(path);
     if (old) { this.texCache.delete(path); old.tex.dispose(); }
     const tex = this.makeTex(canvasEl);

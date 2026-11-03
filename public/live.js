@@ -38,6 +38,7 @@ function placePill() {
   pillEl.style.left = Math.round(v.x + v.w / 2) + 'px';
 }
 function showPill() {
+  if (deps?.isTabs?.()) { hidePill(); return; }
   if (!pillEl) pillEl = initPill();
   if (!convoDirty && !addedSet.size && !removedSet.size) { hidePill(); return; } // e.g. rename then undo: nets out to nothing
   if (convoDirty && !addedSet.size && !removedSet.size) {
@@ -74,6 +75,7 @@ function openStream(path) {
   if (deps && deps.panel) q.push('panel=1');
   const qs = q.length ? '?' + q.join('&') : '';
   try { es = new EventSource('/api/events' + qs); } catch (_) { es = null; return; }
+  es.addEventListener('open', () => { if (deps.onTabs) deps.onTabs(); });
   es.addEventListener('dir', ev => {
     if (Date.now() < ignoreUntil) return;
     let d;
@@ -208,3 +210,6 @@ export function initLive(d) {
   initIndexSwitch();
   // stream opens on the first target poll (~0.8 s) once the folder is known
 }
+
+// A file notification belongs to the file view, never to browser tabs.
+export function liveViewChanged() { resetPill(); }

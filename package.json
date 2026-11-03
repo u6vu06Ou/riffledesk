@@ -1,6 +1,6 @@
 {
   "name": "riffledesk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local read-only 3D file browser (three.js card stack) with recursive full-text search",
   "license": "MIT",
   "author": "u6vu06ou",

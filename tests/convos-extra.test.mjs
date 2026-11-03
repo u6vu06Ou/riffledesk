@@ -154,8 +154,16 @@ test('pi: session header cwd, session_info name is the title, write/edit capture
 test('grok build: summary.json title wins, write/search_replace/apply_patch captured, content ghost never attributed', () => {
   const g = convo('grok:grok-1');
   assert.equal(g.title, 'Grok 產生報表腳本');
+  assert.equal(g.firstPrompt, '產生報表腳本');
   assert.ok(has(g, 'grok-a.md') && has(g, 'grok-b.md') && has(g, 'grok-c.md') && has(g, 'grok-e.md'));
   assert.ok(!has(g, 'ghost2.md'), '"*** Add File:" inside write CONTENT must not count');
+});
+
+test('every supported agent preserves source paths and its original first prompt', () => {
+  for (const c of scanResult.convos) {
+    assert.ok(c.id && c.firstPrompt, `${c.agent}: native ID and first prompt`);
+    assert.ok(c.transcriptPaths.length && c.transcriptPaths.every(p => fs.existsSync(p)), `${c.agent}: original files`);
+  }
 });
 
 test('normalizeRoots: nonexistent dirs skipped silently, explicit kinds kept', () => {

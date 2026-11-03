@@ -1143,6 +1143,7 @@ async function apiConvos(res, u) {
     .filter(c => c.fileCount > 0)
     .sort((a, b) => b.updated - a.updated)
     .map(c => ({ id: convos.mergeId(c), agent: c.agent, title: c.title, project: c.project, auto: !!c.auto,
+      sessionId: c.id, firstPrompt: c.firstPrompt, sessionTitle: c.sessionTitle, transcriptPaths: c.transcriptPaths,
       started: c.started, updated: c.updated, fileCount: c.fileCount }));
   return sendJson(res, 200, { ok: true, days, convos: list, scanned: data.transcripts, ms: Date.now() - t0 });
 }
@@ -1154,6 +1155,7 @@ async function apiConvo(res, u) {
   if (!c) return sendJson(res, 404, { ok: false, error: 'not found' });
   const files = c.files.filter(f => f.exists).map(f => convoFileInfo(f.path)).filter(Boolean);
   return sendJson(res, 200, { ok: true, id, agent: c.agent, title: c.title, project: c.project,
+    sessionId: c.id, firstPrompt: c.firstPrompt, sessionTitle: c.sessionTitle, transcriptPaths: c.transcriptPaths,
     started: c.started, updated: c.updated, files });
 }
 async function apiRecent(res, u) {
@@ -1307,6 +1309,9 @@ function convoTranscriptSig() {
       files++; bytes += f.size;
       if (f.mtimeMs > newest) newest = f.mtimeMs;
     }
+    for (const abs of convos.metadataFiles(r, found)) {
+      try { const st = fs.statSync(abs); files++; bytes += st.size; newest = Math.max(newest, st.mtimeMs); } catch (_) {}
+    }
   }
   return files + ':' + bytes + ':' + Math.round(newest);
 }
@@ -1318,6 +1323,7 @@ function convoHubStart() {
     try { sig = convoTranscriptSig(); } catch (_) { return; }
     if (sig === convoHub.sig) return;
     convoHub.sig = sig;
+    convoScanCache = null;
     for (const res of convoHub.subs) sendSse(res, 'convos', { at: Date.now() });
   }, CONVO_POLL_MS);
   convoHub.timer.unref();
@@ -1562,7 +1568,7 @@ function apiPileList(res) {
   return sendJson(res, 200, {
     ok: true,
     piles: piles.slice().reverse().map(p => ({
-      id: p.id, title: p.title, count: p.paths.length, source: p.source, createdAt: p.createdAt
+      id: p.id, title: p.title, count: pileFiles(p.paths).files.length, source: p.source, createdAt: p.createdAt
     }))
   });
 }

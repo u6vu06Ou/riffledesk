@@ -50,6 +50,8 @@ RiffleDesk is the missing surface for that exchange:
 
 **Piles.** `riffledesk show a.md b.md --title "…"` hands over a whole shortlist as one stack — only those cards, nothing else from the folders they live in. It notifies rather than switching; the left column keeps the recent piles and `/?pile=<id>` reopens one. `riffledesk search … --json | riffledesk show` works too.
 
+AI handoff piles always show every delivered file, regardless of the folder type filter. The type control says “All files in this pile”; leaving the pile restores your folder filter. A pile's count shows files that still exist; only an empty pile's count is muted.
+
 **Also:** AI-conversation lists ("which conversation wrote this file?"), pinned folders, a secret scan that flags files containing what looks like an API key, and an idle render loop that stops entirely when nothing moves.
 
 ## Install
@@ -84,6 +86,15 @@ riffledesk --help
 `open` POSTs to `/api/project` with the header `X-RiffleDesk-CLI: 1` (a browser's cross-site POST cannot forge it) and reports how many tabs took the file; with none connected, or on a server that predates the endpoint, it opens `/?open=<path>` in the default browser instead. Both subcommands probe the local port first and start a detached, windowless server when nothing answers. Output is English so scripts can parse it; `search` exits 1 when nothing matched, 2 on bad usage.
 
 A ready-made skill that teaches an agent this loop lives in [`skills/riffledesk/`](skills/riffledesk/). The full endpoint reference is in [docs/API.md](docs/API.md).
+
+Markdown uses a calm reading layout without rewriting the source. HTML can mix
+prose, diagrams and an interactive three.js figure inside the document; the user
+explicitly enables page code. See [delivery capabilities and optional examples](skills/riffledesk/DELIVERABLES.md).
+Agents can choose their own format; no additional skill or template is required.
+
+The sidebar groups can be collapsed. Conversations use the tool's saved title or summary when available; hover to see the first prompt, or use the info button to copy the session ID and locate the original transcript. Browser-tab mode keeps its cards and position when new deliveries arrive or a connection check fails; reconnecting does not switch you back to files.
+The toolbar's **Type** menu supports multiple file types with ordinary clicks.
+**HTML / interactive 3D** includes HTML pages; standalone JavaScript stays under Code.
 
 ## Privacy
 
