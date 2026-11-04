@@ -129,7 +129,7 @@ let lastPushOkRef = 0, lastErrorRef = '';
 const testStats = { extClicks: 0, panelOpenCalls: 0, panelOpenOk: 0, panelOpenFail: 0,
                     drawn: 0, drawFail: 0, activatedEvents: 0,
                     closed: 0, restored: 0, backToFull: 0,
-                    drawerZoomOff: 0, drawerZoomOn: 0, drawerInjects: 0 };
+                    drawerInjects: 0 };
 
 // ---------------------------------------------------------------- helpers
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1243,15 +1243,6 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ open: Number.isFinite(w) ? panelOpenInWindow(w) : panelPorts.size > 0 });
     return;
   }
-  if (msg && msg.type === 'riffle-drawer-zoom') {
-    // 抽屜內容腳本：指標進抽屜→on:true（暫停本分頁瀏覽器縮放）、離開→on:false（還原）
-    const id = _sender && _sender.tab && _sender.tab.id;
-    if (!(id > 0)) { sendResponse({ ok: false }); return; }
-    setDrawerZoomMode(id, msg.on === true)
-      .then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: false }));
-    return true;                                     // 非同步回覆
-  }
   if (msg && msg.type === 'riffle-test-idle') {
     // e2e 測試注入閒置狀態（不要等真的 60 秒）：'idle' → 開始補拍；'active' → 中止並還原
     testIdleOverride = ['idle', 'active', 'locked'].includes(msg.state) ? msg.state : null;
@@ -1390,76 +1381,27 @@ if (api.runtime && api.runtime.onConnect) {
   });
 }
 
-// ---------------------------------------------------------- 抽屜 Ctrl+滾輪護欄
-// 背景（機制細節見 drawer.js 的註解）：指標停在抽屜上時把該分頁的 zoom mode 暫時設成
-// disabled——Ctrl+滾輪不再是「整頁縮放」手勢，事件照一般 wheel 路由送進巢狀 iframe
-// （畫布＝相機遠近、面板其餘處＝介面縮放），主頁也不會被瀏覽器縮放；離開即還原。
-// per-tab scope：不污染同網站其他分頁的固有縮放設定。
-const drawerZoomTabs = new Set();        // 目前被我們扣在 disabled 的分頁（記憶體層）
-const drawerZoomQueue = new Map();       // tabId → 進行中的切換 promise：同分頁操作序列化
-const ZOOM_SNAP_KEY = 'drawerZoomSnap';  // storage.session 持久層：SW 被回收後仍能還原
-async function zoomSnaps() {
-  try { const o = await api.storage.session.get(ZOOM_SNAP_KEY); return o[ZOOM_SNAP_KEY] || {}; } catch (_) { return {}; }
-}
-async function zoomSnapsSave(all) {
-  try { await api.storage.session.set({ [ZOOM_SNAP_KEY]: all }); } catch (_) {}
-}
-// 停用前先快照該分頁原本的 mode/scope、還原時回填——不硬寫 automatic/per-tab，
-// 免得把使用者自己設的 manual 或 per-origin 縮放設定洗掉。也只還原「我們停用過」
-// 的分頁（有快照或記憶體有記錄），沒追蹤過的一概不碰。setZoomSettings 失敗就往外
-// 拋、不記錄，狀態才不會跟瀏覽器脫節。
-async function applyDrawerZoomMode(tabId, off) {
-  if (!api.tabs || typeof api.tabs.setZoomSettings !== 'function') return;
-  const key = String(tabId);
-  if (off) {
-    if (drawerZoomTabs.has(tabId)) return;                       // 冪等：已停用
-    let snap = { mode: 'automatic', scope: 'per-tab' };
-    try {
-      const s = await api.tabs.getZoomSettings(tabId);
-      if (s && s.mode) snap = { mode: s.mode, scope: s.scope || 'per-tab' };
-    } catch (_) {}
-    await api.tabs.setZoomSettings(tabId, { mode: 'disabled', scope: 'per-tab' });
-    drawerZoomTabs.add(tabId);
-    const all = await zoomSnaps(); all[key] = snap; await zoomSnapsSave(all);
-    testStats.drawerZoomOff++;
-    return;
-  }
-  const all = await zoomSnaps();
-  const snap = all[key] || null;
-  if (!snap && !drawerZoomTabs.has(tabId)) return;               // 沒追蹤過：不動使用者設定
-  try {
-    await api.tabs.setZoomSettings(tabId, snap ? { mode: snap.mode, scope: snap.scope }
-                                               : { mode: 'automatic', scope: 'per-tab' });
-  } catch (_) { /* 分頁可能已關 */ }
-  drawerZoomTabs.delete(tabId);
-  if (snap) { delete all[key]; await zoomSnapsSave(all); }
-  testStats.drawerZoomOn++;
-}
-function setDrawerZoomMode(tabId, off) {
-  if (!(tabId > 0)) return Promise.resolve();
-  // 同分頁先到先做：enter/leave、onUpdated、SW 喚醒掃描併發時也不會亂序
-  const prev = drawerZoomQueue.get(tabId) || Promise.resolve();
-  const job = prev.catch(() => {}).then(() => applyDrawerZoomMode(tabId, off));
-  drawerZoomQueue.set(tabId, job);
-  job.finally(() => { if (drawerZoomQueue.get(tabId) === job) drawerZoomQueue.delete(tabId); });
-  return job;
-}
-// 還原保險：分頁轉址／關閉時若還扣著 disabled，走同一條佇列照快照還原，
-// 免得那個分頁永遠不能縮放；沒追蹤過的分頁不會被誤清設定。
-try {
-  api.tabs.onRemoved.addListener(id => { setDrawerZoomMode(id, false).catch(() => {}); });
-  api.tabs.onUpdated.addListener((id, ch) => {
-    if (ch && ch.status === 'loading') setDrawerZoomMode(id, false).catch(() => {});
-  });
-} catch (_) { /* 沒有 tabs 事件就算了 */ }
-// SW 剛醒（被回收過、記憶體層已丟）：session 快照若還在，代表那些分頁可能卡在
-// disabled，逐一還原。殘留窗口：指標若一直停在抽屜上沒動，要到下一次 mouseenter
-// 才重新停用——比「永遠卡住」好得多。
+// ------------------------------------------------ 一次性遷移：還原舊版縮放快照
+// 舊版「抽屜 Ctrl+滾輪護欄」會把指標所在分頁的 zoom mode 暫扣成 disabled、快照存
+// storage.session（升級當下指標若正停在抽屜上，那個分頁可能還被扣著）。護欄已改成
+// 頁面端本機 preventDefault（drawer.js swallowZoomGestures），永遠不再碰 zoom 設定
+// ——這裡只做一次還原善後：照快照回填 mode/scope、隨即刪掉快照，下次啟動就沒事做。
+const ZOOM_SNAP_KEY = 'drawerZoomSnap';   // 舊版留下的 storage.session 鍵
 (async () => {
   try {
-    const all = await zoomSnaps();
-    for (const k of Object.keys(all)) await setDrawerZoomMode(Number(k), false);
-  } catch (_) {}
+    const o = await api.storage.session.get(ZOOM_SNAP_KEY);
+    const all = o[ZOOM_SNAP_KEY];
+    if (all) await api.storage.session.remove(ZOOM_SNAP_KEY);
+    if (!all || typeof all !== 'object') return;
+    if (!api.tabs || typeof api.tabs.setZoomSettings !== 'function') return;
+    for (const k of Object.keys(all)) {
+      const snap = all[k];
+      if (!snap || !snap.mode) continue;
+      try {
+        await api.tabs.setZoomSettings(Number(k), { mode: snap.mode, scope: snap.scope || 'per-tab' });
+      } catch (_) { /* 分頁可能已關 */ }
+    }
+  } catch (_) { /* storage.session 不可用就算了 */ }
 })();
 
 // ---------------------------------------------------------- 抽屜內容腳本補種

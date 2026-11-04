@@ -164,16 +164,24 @@ async function main() {
   ok(!!panelFrame, 'drawer iframe loaded the real panel page (?mode=panel on the server)', panelFrame ? panelFrame.url() : page.frames().map(f => f.url()));
 
   // ---- Ctrl+滾輪：畫布上＝相機縮放、面板其餘處＝介面縮放、主頁不准瀏覽器縮放 ----
-  // 機制斷言：指標在抽屜內時背景把本分頁 zoom mode 設成 disabled（「整頁縮放」手勢
-  // 不存在，Ctrl+滾輪才會當一般 wheel 送進巢狀 iframe）；指標離開立刻還原 automatic。
+  // 機制斷言（新版）：護欄改為「本機 preventDefault 吞掉縮放手勢」，永遠不碰分頁的
+  // zoom mode/scope/級別——指標進出抽屜全程 getZoomSettings/getZoom 保持原值
+  // （舊版進出各改一次 mode，連帶重設縮放級別並觸發 Chrome 縮放氣泡，已回歸測到）。
   let cardN = 0;
   for (let i = 0; i < 40 && !cardN; i++) {
     cardN = await panelFrame.evaluate(() => (window.__dbg && window.__dbg.scene().view.length) || 0).catch(() => 0);
     if (!cardN) await sleep(250);
   }
   ok(cardN > 0, 'panel stack has cards to wheel over', cardN);
-  const getFixZoomMode = () => opt.evaluate(u => chrome.tabs.query({ url: u }).then(ts =>
-    ts && ts[0] ? chrome.tabs.getZoomSettings(ts[0].id) : null), FIX + '/p1');
+  // 頂層分頁的完整縮放狀態（mode/scope/級別），用來斷言「指標進出抽屜前後沒被動過」
+  const getFixZoom = () => opt.evaluate(u => chrome.tabs.query({ url: u }).then(async ts => {
+    if (!ts || !ts[0]) return null;
+    const zs = await chrome.tabs.getZoomSettings(ts[0].id);
+    const z = await chrome.tabs.getZoom(ts[0].id);
+    return { mode: zs.mode, scope: zs.scope, zoom: z };
+  }), FIX + '/p1');
+  const sameZoom = (a, b) => !!a && !!b && a.mode === b.mode && a.scope === b.scope && a.zoom === b.zoom;
+  const zoomBefore = await getFixZoom();
   const frameRect = await page.evaluate(() => {
     const h = document.getElementById('riffle-drawer-host');
     const r = h.shadowRoot.querySelector('iframe.f').getBoundingClientRect();
@@ -186,8 +194,23 @@ async function main() {
   const canvasPt = { x: Math.round(frameRect.x + frameRect.w / 2), y: Math.round(frameRect.y + tbBottom + 60) };
   await page.mouse.move(canvasPt.x, canvasPt.y);
   await sleep(500);
-  let zs = await getFixZoomMode();
-  ok(zs && zs.mode === 'disabled', 'hovering the drawer: host tab zoom mode disabled (browser-zoom gesture off)', zs);
+  let zs = await getFixZoom();
+  ok(sameZoom(zoomBefore, zs),
+     'hovering the drawer: host tab zoom settings + level untouched (no zoom-settings dance, no bubble)',
+     { before: zoomBefore, whileHover: zs });
+
+  // 合成 ctrl+wheel 派到抽屜殼（非 iframe 部分）：內容腳本的本機攔截應 preventDefault
+  const shellBlocked = await page.evaluate(() => {
+    const h = document.getElementById('riffle-drawer-host');
+    const hd = h && h.shadowRoot && h.shadowRoot.querySelector('.hd');
+    if (!hd) return null;
+    // 註：建構式造的事件 composed 預設 false 過不了 shadow 邊界；瀏覽器真實 wheel
+    // 是 composed:true——這裡照真實事件設，驗 capture 攔截鏈
+    const ev = new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, ctrlKey: true, deltaY: -120 });
+    hd.dispatchEvent(ev);
+    return ev.defaultPrevented === true;
+  });
+  ok(shellBlocked === true, 'ctrl+wheel dispatched over the drawer shell is defaultPrevented', shellBlocked);
 
   // Ctrl+滾輪（畫布上）→ 相機 zoom 變、介面 zoom 不變
   const cam0 = await panelFrame.evaluate(() => window.__dbg.camera().orbit.zoom);
@@ -226,11 +249,13 @@ async function main() {
   ok(afterUi.z !== uiZ0, 'Ctrl+wheel over the panel toolbar zooms the UI', { uiZ0, z: afterUi.z });
   await panelFrame.evaluate(() => window.__dbg.setUiZoom(1));   // 還原，免得影響後面量測
 
-  // 指標離開抽屜 → zoom mode 還原（抽屜外的主頁 Ctrl+滾輪回到正常瀏覽器縮放行為）
+  // 指標離開抽屜：縮放狀態依然原封不動（整個進出循環沒有碰過 zoom settings/級別；
+  // 舊版就是在進出時各 setZoomSettings 一次，把 per-origin ≠100% 的網站打回 100%）
   await page.mouse.move(640, 420, { steps: 4 });
   await sleep(600);
-  zs = await getFixZoomMode();
-  ok(zs && zs.mode === 'automatic', 'pointer left the drawer: host tab zoom mode restored to automatic', zs);
+  zs = await getFixZoom();
+  ok(sameZoom(zoomBefore, zs),
+     'pointer left the drawer: host tab zoom settings + level still untouched', { before: zoomBefore, after: zs });
 
   fs.mkdirSync(SHOTS, { recursive: true });
   await sleep(1500);   // 面板渲染一下再拍

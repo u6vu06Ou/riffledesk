@@ -22,6 +22,18 @@ const ti = (typeof RD_I18N !== 'undefined' && RD_I18N.t) || (k => k);
 //  2. Esc 經內容腳本收起抽屜自己（頁面 keydown 攔不到 iframe 裡的按鍵）。
 const DRAWER_MODE = /[?&]drawer=1(?:&|$)/.test(location.search);
 
+// 抽屜模式：本機吞掉瀏覽器縮放手勢（機制全貌見 drawer.js 的 swallowZoomGestures）。
+// 這份文件是「網頁 → 本頁 → 本機 http 面板」三層巢狀的中間層：滾輪落在「本層可見
+// 但面板 iframe 之外的縫」（連線狀態條、啟動教學頁、iframe 載入前的空白）時事件到
+// 這裡為止——ctrl+wheel 被取消瀏覽器就不做整頁縮放；焦點在本層時 Ctrl+±/0 同理擋。
+// 面板 iframe 裡的由面板頁自己擋（main.js／stack.js 已 non-passive preventDefault）。
+if (DRAWER_MODE) {
+  addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { capture: true, passive: false });
+  addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && ['+', '-', '=', '0', '_'].includes(e.key)) e.preventDefault();
+  }, { capture: true });
+}
+
 // 預設埠與 background.js 同源：sidepanel.html 先載 defaults.js（RIFFLE_DEFAULT_PORT）
 const DEFAULT_PORT = (typeof RIFFLE_DEFAULT_PORT === 'number' && RIFFLE_DEFAULT_PORT) || 5177;
 const RETRY_DOWN_MS = 3000;    // 伺服器沒跑：3 秒試一次

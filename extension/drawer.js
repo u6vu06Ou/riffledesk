@@ -32,7 +32,6 @@
   const api = globalThis.browser ?? globalThis.chrome;
   if (!api || !api.runtime || !api.storage || !api.storage.local) return;
   try { if (!api.runtime.id) return; } catch (_) { return; }   // 孤兒腳本（擴充已重載）
-  let resurrected = false;
   {
     const prev = window.__rdDrawerInit;
     if (prev) {
@@ -42,18 +41,11 @@
       }
       if (alive) return;                             // 活實體在：重複注入，跳過
       try { document.querySelectorAll('#' + HOST_ID).forEach(h => h.remove()); } catch (_) {}
-      resurrected = true;
     }
   }
   window.__rdDrawerInit = {                          // 先佔旗標再往下跑：後到的注入馬上被擋
     alive: () => { try { return !!api.runtime.id; } catch (_) { return false; } }
   };
-  if (resurrected) {
-    // 前一代死前若正把本分頁扣在瀏覽器縮放 disabled（指標停在遺體上就被重載），還原它
-    try {
-      Promise.resolve(api.runtime.sendMessage({ type: 'riffle-drawer-zoom', on: false })).catch(noteApiError);
-    } catch (e) { noteApiError(e); }   // 剛佔完旗標就發現自己也是孤兒：善後並清旗標
-  }
 
   const ti = (typeof RD_I18N !== 'undefined' && RD_I18N.t) || (k => k);
   const DWELL_MS = 120;      // 碰到邊緣停這麼久才展開
@@ -158,12 +150,12 @@
     (document.documentElement || document.body || document.head).appendChild(host);
     els = { trigger, drawer, pin, grip, frame: null };
     applyWidth();
+    swallowZoomGestures();
     wire();
   }
 
   function teardownUI() {
     clearTimeout(dwellT); clearTimeout(closeT); clearTimeout(lingerT);
-    zoomGuard(false);                                // host 移除時 mouseleave 不一定補送
     if (host) host.remove();
     host = shadow = els = null;
     isOpen = false;
@@ -216,7 +208,6 @@
     }
     isOpen = v;
     els.drawer.dataset.open = v ? '1' : '0';
-    if (!v) zoomGuard(false);   // 收合後指標可能還停在原處（mouseleave 沒再補），別留著關縮放
     if (v) {
       // 徘徊收合：從傳統捲軸上叫開時指標落在抽屜外（捲軸凸出版面視口，抽屜只對齊
       // 版面視口邊緣、蓋不到捲軸）——滑鼠永遠不 mouseenter 抽屜，就等不到
@@ -251,20 +242,26 @@
     closeT = setTimeout(() => { closeT = 0; if (isOpen && !pinned && !drag) setOpen(false); }, CLOSE_MS);
   }
 
-  // -------------------------------------------------- Ctrl+滾輪護欄（瀏覽器縮放）
-  // Chrome 定性：指標停在跨程序 iframe 上時，Ctrl+滾輪在瀏覽器程序就被當成
-  // 「整頁縮放」手勢吃掉，去縮放「主頁」——抽屜裡的面板頁巢在「網頁 → 擴充頁 →
-  // 本機 http」兩層 OOPIF 深處，面板自己的 preventDefault（stack.js 畫布、main.js
-  // 介面縮放）攔不到瀏覽器層的手勢，所以卡堆的相機拉近拉遠完全不動，主頁反而被縮放。
-  // （真側邊欄是獨立 view、沒有可縮放的主頁，所以同一份面板頁在那裡沒這個病。）
-  // 網頁端程式碼關不掉這個手勢——事件根本到不了頁面層；擴充可以：
-  // 指標進抽屜就把本分頁的縮放模式暫時切成 disabled（per-tab）。手勢不存在了，
-  // Ctrl+滾輪照一般 wheel 路由送進巢狀 iframe：畫布上＝相機遠近、面板其餘處＝介面
-  // 縮放，主頁也不再被縮放。指標一離開立刻還原 automatic——抽屜外的頁面照常縮放。
-  function zoomGuard(on) {
-    try {
-      Promise.resolve(api.runtime.sendMessage({ type: 'riffle-drawer-zoom', on: !!on })).catch(noteApiError);
-    } catch (e) { noteApiError(e); }   // 孤兒腳本多半在這裡同步丟 invalidated
+  // -------------------------------------------------- 本機吞掉瀏覽器縮放手勢
+  // 目標：指標在抽屜上 Ctrl+滾輪（觸控板捏合也是 ctrlKey wheel）不准縮放「主頁」。
+  // 舊做法是指標進出時用 tabs.setZoomSettings 把本分頁的 zoom mode 暫扣成 disabled
+  // ——動 mode/scope 會重設分頁縮放級別（per-origin ≠100% 的網站會跳回 100%），
+  // 每次進出都重排版面並彈出 Chrome 縮放氣泡，已廢棄。現在改本機擋：
+  // ctrl+wheel 只在「事件沒被取消」時才觸發整頁縮放，preventDefault 掉就沒氣泡、
+  // 也不碰縮放級別；事件照樣往下路由——巢狀 iframe（OOPIF）裡的滾輪不浮到本文件，
+  // 那一層由面板頁自己的 non-passive handler 擋（stack.js 畫布＝相機遠近、main.js
+  // 其餘處＝介面縮放，兩邊都 preventDefault），所以這裡只蓋抽屜殼外露的部分
+  // （頂列、把手、觸發條）。縮放快捷鍵同理：焦點落在抽屜殼內時 Ctrl/Cmd ＋ -/=/0
+  // 在這裡擋；焦點在 iframe 內的由 sidepanel.js（drawer 模式）與面板頁各擋各的。
+  function swallowZoomGestures() {
+    host.addEventListener('wheel', e => {
+      if (e.ctrlKey) e.preventDefault();             // 被取消的 ctrl+wheel 不做整頁縮放
+    }, { capture: true, passive: false });
+    host.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && ['+', '-', '=', '0', '_'].includes(e.key)) {
+        e.preventDefault();
+      }
+    }, { capture: true });
   }
 
   // -------------------------------------------- 傳統捲軸死區的視窗層補盯
@@ -315,10 +312,8 @@
     });
     drawer.addEventListener('mouseenter', () => {
       clearTimeout(closeT); closeT = 0; clearTimeout(dwellT);
-      zoomGuard(true);                               // 指標進抽屜：關掉主頁的瀏覽器縮放手勢
     });
     drawer.addEventListener('mouseleave', () => {
-      zoomGuard(false);                              // 離開馬上還原：抽屜外的頁面照常縮放
       if (!pinned) armClose();
     });
     pin.addEventListener('click', () => {
