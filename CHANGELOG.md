@@ -1,14 +1,16 @@
 # Changes
 
-## Unreleased
+## 0.4.1 — 2026-11-04
 
 - Fix the auto-hide drawer being unreachable on pages with a classic (non-overlay) Windows scrollbar: the invisible trigger strip aligns to the layout viewport, which excludes the scrollbar, so a pointer slammed to the physical screen edge sat on the scrollbar and never touched the strip. The strip is wider now (12 px) and a window-level mousemove fallback runs the same dwell logic once the pointer reaches the layout-viewport edge (classic scrollbars still deliver mousemove past documentElement.clientWidth); button-held moves (scrollbar drags) do not trigger.
 - Add a drawer side setting (right/left, default right) on the options page that live-applies to open tabs: trigger strip, slide direction, and resize grip all mirror.
 - Make the drawer orphan-safe: extension API calls that can throw "Extension context invalidated" after a reload now tear the drawer UI down and clear its occupancy flag instead of leaving a dead shell, so background re-seeding revives it.
-- Bump the extension manifest to 0.2.0 (both Chrome and Firefox copies) so a reload fires onInstalled and re-seeds old tabs. Rule: any change under extension/ requires a manifest version bump.
+- Bump the extension manifest from 0.1.0 to 0.4.1 (both Chrome and Firefox copies) so a reload fires onInstalled and re-seeds old tabs. From now on the extension and the npm package share one version number and are bumped together; any change under extension/ requires a bump.
 - Compute card change badges (git +N −M) off the event loop (async execFile with a concurrency cap in pile listings) instead of blocking it with execFileSync.
 - Release all blob URLs a PPTX parse created once a thumbnail is produced, instead of leaking them until the next render.
 - Replace hardcoded developer machine paths in two test/verification scripts with repo-root-relative resolution.
+
+Validation: 270 unit tests passed, one skipped, no failures. drawer-scrollbar (27 checks), drawer, drawer-view and pptx e2e passed. The classic-scrollbar case is verified with synthetic events because headless Chromium renders no layout-width scrollbar.
 
 ## 0.4.0 — 2026-11-03
 

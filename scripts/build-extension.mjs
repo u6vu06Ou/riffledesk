@@ -2,7 +2,7 @@
 // 零相依：zip 用 store（不壓縮）自己寫，Node 內建 zlib 只在想壓時才需要，這裡不需要。
 // Firefox 版把 manifest.firefox.json 改名成 manifest.json 放進壓縮檔，其餘檔案兩版相同。
 // 用法：npm run build:ext   → dist/extension-chrome.zip、dist/extension-firefox.zip
-// 注意：動 extension/ 裡的任何檔案，兩份 manifest 的 version 要一起 bump——
+// 注意：動 extension/ 裡的任何檔案，兩份 manifest 的 version 要一起 bump（跟 package.json 同號）——
 // onInstalled 只在 version 變動時重跑，舊分頁靠它補種新的內容腳本（不 bump 的話
 // 載入中的舊分頁永遠拿舊 drawer.js）。欄位一致由下方 checkManifestAgreement 強制。
 import fs from 'node:fs';
