@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+- Add `riffledesk hook install|uninstall|status|check`: an opt-in Claude Code Stop hook that reminds the agent once, as it is about to finish, when it wrote deliverable files without handing them over via `riffledesk open` / `riffledesk show`. `install` merges into the settings file (other hooks untouched, .bak first, idempotent, invalid JSON refused); `check` reads only the transcript tail, never loops on stop_hook_active, and exits silently on any error so the nudge can never block a session.
+- Drawer no longer changes the page zoom / shows Chrome's zoom bubble when the pointer moves in and out.
+
 ## 0.4.1 — 2026-11-04
 
 - Fix the auto-hide drawer being unreachable on pages with a classic (non-overlay) Windows scrollbar: the invisible trigger strip aligns to the layout viewport, which excludes the scrollbar, so a pointer slammed to the physical screen edge sat on the scrollbar and never touched the strip. The strip is wider now (12 px) and a window-level mousemove fallback runs the same dwell logic once the pointer reaches the layout-viewport edge (classic scrollbars still deliver mousemove past documentElement.clientWidth); button-held moves (scrollbar drags) do not trigger.

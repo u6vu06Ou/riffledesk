@@ -70,6 +70,9 @@ Item fields: `op` (`edit-text|move|resize|delete|note|region-note`),
 list still prints, prefixed `(already handled)`. Apply every item, then `--done`.
 
 ## Other
+- `riffledesk hook install` (opt-in) adds a Claude Code Stop hook that reminds
+  you once if you finish having written deliverable files you never handed over
+  with open/show; `riffledesk hook status` / `riffledesk hook uninstall` manage it.
 - `riffledesk install-skill [--claude] [--dest <dir>]` (identical copy left
   alone; a different one backed up under `skills-backup/riffledesk-<time>/`, so
   it is not loaded as a second skill).

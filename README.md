@@ -87,6 +87,18 @@ riffledesk --help
 
 A ready-made skill that teaches an agent this loop lives in [`skills/riffledesk/`](skills/riffledesk/). The full endpoint reference is in [docs/API.md](docs/API.md).
 
+### Opt-in Stop-hook reminder (Claude Code)
+
+Agents sometimes finish a turn with freshly written deliverables (reports, pages, sheets) they never handed over. The CLI ships a Stop hook that nudges them once in exactly that case:
+
+```sh
+riffledesk hook install      # merge a Stop hook into ~/.claude/settings.json (.bak written first)
+riffledesk hook status       # installed? (exit 0 yes / 1 no)
+riffledesk hook uninstall    # remove exactly our entry, leave other hooks alone
+```
+
+When the agent stops, the hook scans the tail of the session transcript; if a Write/Edit created a deliverable file (`.md .html .svg .pdf .csv .png .jpg .docx .xlsx .pptx`…) and no `riffledesk open`/`show` ran after the last user message, the agent is reminded with the exact command. It never loops, watches nothing continuously, and any error exits silently so it can never block a session. Nothing else in the settings file is touched; an invalid-JSON file is refused, never overwritten.
+
 Markdown uses a calm reading layout without rewriting the source. HTML can mix
 prose, diagrams and an interactive three.js figure inside the document; the user
 explicitly enables page code. See [delivery capabilities and optional examples](skills/riffledesk/DELIVERABLES.md).

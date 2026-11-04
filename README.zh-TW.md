@@ -89,6 +89,18 @@ riffledesk --help
 
 教 agent 這套流程的 skill 放在 [`skills/riffledesk/`](skills/riffledesk/)。完整端點清單在 [docs/API.md](docs/API.md)。
 
+### 可選的 Stop 提醒（Claude Code）
+
+agent 有時寫完要交付的檔（報告、網頁、試算表）就直接收尾，忘了給使用者看。CLI 內建一支 Stop hook，專門在這種情況提醒一次：
+
+```sh
+riffledesk hook install      # 合併進 ~/.claude/settings.json（先寫 .bak、其他 hook 不動）
+riffledesk hook status       # 看有沒有裝（裝了 exit 0、沒裝 exit 1）
+riffledesk hook uninstall    # 只移除我們這條
+```
+
+agent 收尾時 hook 才跑一次：掃對話紀錄尾巴，如果 Write/Edit 寫了交付型檔案（`.md .html .svg .pdf .csv .png .jpg .docx .xlsx .pptx`…），而且最後一句使用者訊息之後沒跑過 `riffledesk open`／`show`，就用正確指令提醒 agent 補交。不會遞迴觸發、平常完全不跑；任何錯誤都靜默結束，絕不卡住對話。設定檔其他內容一律不動；檔案不是合法 JSON 就拒絕（exit 2），不會覆蓋。
+
 一般 Markdown 會自動套用書頁式閱讀排版，原稿不變。HTML 可以在同一份文件裡混合文字、插圖、圖解與可操作的 three.js 圖；程式由使用者按下執行才啟用。詳見[交付能力與可選範例](skills/riffledesk/DELIVERABLES.md)，不需要另外安裝技能，也不強制 agent 使用模板。
 
 工具列的「類型」選單可直接複選，例如同時顯示 MD 與 TXT，重整後保留選擇。「HTML／互動 3D」包含 HTML 網頁；單獨的 JavaScript 仍屬程式碼。這裡只篩選顯示檔案，不限制 AI 產出格式。

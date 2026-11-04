@@ -8,6 +8,7 @@
 //   riffledesk changes <html>        read the browser's HTML revamp list (disk only)
 //   riffledesk wait <html>           block until a fresh revamp list appears
 //   riffledesk install-skill         copy the bundled agent skill to a skills dir
+//   riffledesk hook install          add the opt-in Claude Code Stop-hook reminder
 //
 // Zero dependencies (node builtins only) so agents can shell out to it anywhere.
 'use strict';
@@ -18,6 +19,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const { spawn, spawnSync } = require('node:child_process');
 const { startBackground, logFileFor } = require('./background');
+const hooklib = require('./hook');
 
 const ROOT = path.resolve(__dirname, '..');
 const PKG = require(path.join(ROOT, 'package.json'));
@@ -61,6 +63,7 @@ usage:
   riffledesk changes <html> [options]      read the browser's revamp list for an HTML file
   riffledesk wait <html> [options]         block until the user hands over a fresh revamp list
   riffledesk install-skill [options]       copy the bundled agent skill to a skills directory
+  riffledesk hook <sub> [options]          manage the opt-in Claude Code Stop-hook reminder
   riffledesk --help | -h                   show this help
 
 start options:
@@ -207,7 +210,31 @@ kept in a partner "skills-backup" folder next to the skills directory
 skills directory on purpose: a backup inside it would be loaded as a second
 skill. A symlinked target is refused. Nothing else is touched.
 
-exit codes: 0 ok · 1 no bundled skill or copy failed · 2 bad usage`
+exit codes: 0 ok · 1 no bundled skill or copy failed · 2 bad usage`,
+  hook: `usage: riffledesk hook install [--settings <path>]    add the Claude Code Stop-hook reminder
+       riffledesk hook uninstall [--settings <path>]  remove exactly that reminder
+       riffledesk hook status [--settings <path>]     print installed / not installed
+       riffledesk hook check                          the hook itself (Claude Code runs it on Stop)
+
+Opt-in nudge: when a Claude Code agent stops, "hook check" scans the end of the
+session transcript. If the agent wrote deliverable files (.md, .html, .svg,
+.pdf, .csv, .png, .jpg, .docx, .xlsx, .pptx…) without handing them over via
+"riffledesk open" / "riffledesk show", it is reminded once with the exact
+command. It never loops (stop_hook_active), and any error — a missing or
+half-written transcript, garbage input — exits silently so the nudge can never
+block the agent.
+
+  --settings <path>   settings file (default ~/.claude/settings.json; ~ expands)
+
+install merges into the existing file: other hooks and keys stay untouched, a
+<settings>.bak copy is written first, and a second run changes nothing. A
+settings file that is not valid JSON is refused (exit 2), never overwritten.
+The hook command calls node with the absolute riffledesk.js path — the bare
+Windows shim is a POSIX sh script whose forks trip EDR. uninstall removes only
+the riffledesk entry; other hooks stay. status exits 0 installed / 1 not.
+
+exit codes: 0 ok · 1 status: not installed · 2 bad usage or a settings file that
+is not valid JSON`
 };
 
 // Bad input always carries the matching usage block, on stderr.
@@ -1082,6 +1109,109 @@ async function cmdInstallSkill(argv) {
   }
 }
 
+// ---------- hook (Claude Code Stop-hook reminder) ----------
+//
+// Opt-in: `hook install` merges one Stop-hook entry into the settings file,
+// `hook check` is what Claude Code then runs when an agent stops. `check` gets
+// the hook payload on stdin ({session_id, transcript_path, stop_hook_active})
+// and must never block wrongly: stop_hook_active (a block already fired this
+// stop), a missing transcript and every read/parse error all exit 0 silently.
+
+function parseHookArgs(argv) {
+  const opts = { settings: null, help: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') { for (const rest of argv.slice(i + 1)) fail(`unexpected argument: ${rest}`, 2, USAGE.hook); break; }
+    if (a === '-h' || a === '--help') opts.help = true;
+    else if (a === '--settings') opts.settings = valueArg(argv, i++, '--settings', USAGE.hook);
+    else if (a.startsWith('--settings=')) {
+      opts.settings = a.slice(11);
+      if (!opts.settings) fail('empty value for --settings — give a file path', 2, USAGE.hook);
+    }
+    else fail(`unknown option: ${a}`, 2, USAGE.hook);
+  }
+  return opts;
+}
+
+// Bounded stdin read: a hook always gets a small JSON payload then EOF, but a
+// stuck or terminal stdin must not hang the agent's stop.
+function readHookStdin() {
+  return new Promise(resolve => {
+    if (process.stdin.isTTY) return resolve('');
+    let data = '';
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { process.stdin.pause(); } catch (_) {}
+      resolve(data);
+    };
+    const timer = setTimeout(finish, 2000);
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', c => {
+      data += c;
+      if (data.length > 1024 * 1024) { data = data.slice(0, 1024 * 1024); finish(); }
+    });
+    process.stdin.on('end', finish);
+    process.stdin.on('error', finish);
+    try { process.stdin.resume(); } catch (_) {}
+  });
+}
+
+function cmdHookCheck() {
+  return readHookStdin().then(raw => {
+    try {
+      let input;
+      try { input = JSON.parse(raw); } catch (_) { return; }
+      if (!input || typeof input !== 'object') return;
+      if (input.stop_hook_active === true) return;              // never loop
+      const tp = input.transcript_path;
+      if (typeof tp !== 'string' || !tp) return;
+      const tail = hooklib.readTail(tp);
+      if (tail === null) return;
+      const { files, shown } = hooklib.analyzeTail(tail);
+      if (!files.length || shown) return;
+      const kept = hooklib.deliverableFiles(files);
+      if (!kept.length) return;
+      console.log(JSON.stringify({ decision: 'block', reason: hooklib.blockReason(kept) }));
+    } catch (_) {
+      // a broken nudge must never block the agent
+    }
+    process.exit(0);
+  });
+}
+
+function cmdHook(argv) {
+  const sub = argv[0];
+  if (sub === 'check') return cmdHookCheck();
+  if (sub === '-h' || sub === '--help') { console.log(USAGE.hook); process.exit(0); }
+  if (sub === undefined) { console.error(USAGE.hook); process.exit(2); }
+  if (sub !== 'install' && sub !== 'uninstall' && sub !== 'status') {
+    fail(`unknown hook command: ${sub}`, 2, USAGE.hook);
+  }
+  const opts = parseHookArgs(argv.slice(1));
+  if (opts.help) { console.log(USAGE.hook); process.exit(0); }
+  const settingsPath = path.resolve(expandHome(opts.settings || hooklib.defaultSettingsPath()));
+
+  if (sub === 'status') {
+    const s = hooklib.status(settingsPath);
+    if (s.warning) console.error(`${PKG.name}: warning — ${s.warning}`);
+    console.log(s.installed ? `installed (${settingsPath})` : `not installed (${settingsPath})`);
+    process.exitCode = s.installed ? 0 : 1;
+    return;
+  }
+  const run = sub === 'install'
+    ? () => hooklib.install(settingsPath, __filename)
+    : () => hooklib.uninstall(settingsPath);
+  let res;
+  try { res = run(); }
+  catch (err) {
+    fail(err.settingsError ? err.message : `cannot ${sub} the hook: ${err.message}`, err.settingsError ? 2 : 1, USAGE.hook);
+  }
+  console.log(res.message);
+}
+
 async function cmdStart(argv) {
   const opts = parseStart(argv);
   if (opts.help) { usage(); process.exit(0); }
@@ -1178,6 +1308,7 @@ async function main() {
   if (first === 'changes') return cmdChanges(argv.slice(1));
   if (first === 'wait') return cmdWait(argv.slice(1));
   if (first === 'install-skill') return cmdInstallSkill(argv.slice(1));
+  if (first === 'hook') return cmdHook(argv.slice(1));
   if (['status', 'stop', 'restart'].includes(first)) return cmdService(first, argv.slice(1));
   if (first && !first.startsWith('-') && !/^\d+$/.test(first)) fail(`unknown command: ${first}`, 2, usageText());
   return cmdStart(argv);
