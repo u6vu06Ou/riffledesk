@@ -1,9 +1,12 @@
 # Changes
 
-## Unreleased
+## 0.4.2 — 2026-11-04
 
 - Add `riffledesk hook install|uninstall|status|check`: an opt-in Claude Code Stop hook that reminds the agent once, as it is about to finish, when it wrote deliverable files without handing them over via `riffledesk open` / `riffledesk show`. `install` merges into the settings file (other hooks untouched, .bak first, idempotent, invalid JSON refused); `check` reads only the transcript tail, never loops on stop_hook_active, and exits silently on any error so the nudge can never block a session.
-- Drawer no longer changes the page zoom / shows Chrome's zoom bubble when the pointer moves in and out.
+- Drawer no longer changes the page zoom / shows Chrome's zoom bubble when the pointer moves in and out. It used to switch the tab's zoom mode on every hover, which resets the zoom level; now Ctrl+wheel, pinch and Ctrl +/-/0 are swallowed inside the drawer only. A one-time startup migration restores any tab left in the old disabled zoom mode.
+- Bump the extension manifest to 0.4.2 (Chrome and Firefox).
+
+Validation: 303 unit tests passed, one skipped, no failures. drawer (44 checks) and drawer-view (19 checks) e2e passed.
 
 ## 0.4.1 — 2026-11-04
 
