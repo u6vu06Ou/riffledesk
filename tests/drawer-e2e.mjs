@@ -212,6 +212,30 @@ async function main() {
   });
   ok(shellBlocked === true, 'ctrl+wheel dispatched over the drawer shell is defaultPrevented', shellBlocked);
 
+  // 合成事件只能證 listener 在；真實輸入（CDP）按 Control 在抽屜頂列上滾，
+  // 頂層分頁的縮放級別必須紋風不動（沒有攔截時這裡會真的瀏覽器縮放）
+  const hdPt = await page.evaluate(() => {
+    const h = document.getElementById('riffle-drawer-host');
+    const r = h.shadowRoot.querySelector('.hd').getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  });
+  await page.mouse.move(hdPt.x, hdPt.y);
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -120);
+  await page.mouse.wheel(0, 120);
+  await page.keyboard.up('Control');
+  await sleep(300);
+  zs = await getFixZoom();
+  ok(sameZoom(zoomBefore, zs), 'real ctrl+wheel over the drawer header: host page zoom unchanged', zs);
+
+  // 鍵盤路徑：焦點在抽屜殼（pin 鈕）時 Ctrl+= 照樣不縮放主頁（e.code 攔截）
+  await page.evaluate(() => document.getElementById('riffle-drawer-host').shadowRoot.querySelector('.pin').focus());
+  await page.keyboard.press('Control+Equal');
+  await sleep(300);
+  zs = await getFixZoom();
+  ok(sameZoom(zoomBefore, zs), 'Ctrl+= with focus in the drawer shell: host page zoom unchanged', zs);
+  await page.mouse.move(canvasPt.x, canvasPt.y);      // 指標回畫布，接續後面量測
+
   // Ctrl+滾輪（畫布上）→ 相機 zoom 變、介面 zoom 不變
   const cam0 = await panelFrame.evaluate(() => window.__dbg.camera().orbit.zoom);
   const uiZ0 = await panelFrame.evaluate(() => window.__dbg.uiZoom());

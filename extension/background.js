@@ -1391,16 +1391,20 @@ const ZOOM_SNAP_KEY = 'drawerZoomSnap';   // 舊版留下的 storage.session 鍵
   try {
     const o = await api.storage.session.get(ZOOM_SNAP_KEY);
     const all = o[ZOOM_SNAP_KEY];
-    if (all) await api.storage.session.remove(ZOOM_SNAP_KEY);
+    // 全部還原完才刪快照：SW 若在迴圈中途被收回，下次啟動能續跑剩下的分頁
     if (!all || typeof all !== 'object') return;
     if (!api.tabs || typeof api.tabs.setZoomSettings !== 'function') return;
     for (const k of Object.keys(all)) {
       const snap = all[k];
       if (!snap || !snap.mode) continue;
       try {
+        // 僅在分頁仍卡在 disabled 時回填——期間使用者自己調過縮放模式的就不蓋
+        const cur = await api.tabs.getZoomSettings(Number(k));
+        if (!cur || cur.mode !== 'disabled') continue;
         await api.tabs.setZoomSettings(Number(k), { mode: snap.mode, scope: snap.scope || 'per-tab' });
       } catch (_) { /* 分頁可能已關 */ }
     }
+    await api.storage.session.remove(ZOOM_SNAP_KEY);
   } catch (_) { /* storage.session 不可用就算了 */ }
 })();
 

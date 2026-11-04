@@ -27,10 +27,13 @@ const DRAWER_MODE = /[?&]drawer=1(?:&|$)/.test(location.search);
 // 但面板 iframe 之外的縫」（連線狀態條、啟動教學頁、iframe 載入前的空白）時事件到
 // 這裡為止——ctrl+wheel 被取消瀏覽器就不做整頁縮放；焦點在本層時 Ctrl+±/0 同理擋。
 // 面板 iframe 裡的由面板頁自己擋（main.js／stack.js 已 non-passive preventDefault）。
+// 注意：drawer 模式下本層一律不縮放（狀態列、啟動教學頁也一樣）——這些 UI 沒有自己的
+// 縮放語義，放行的話 ctrl+wheel 會去縮放「宿主分頁」，正是要避免的行為。
 if (DRAWER_MODE) {
+  const ZOOM_KEY_CODES = new Set(['Equal', 'Minus', 'Digit0', 'Numpad0', 'NumpadAdd', 'NumpadSubtract']);
   addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { capture: true, passive: false });
   addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && ['+', '-', '=', '0', '_'].includes(e.key)) e.preventDefault();
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && ZOOM_KEY_CODES.has(e.code)) e.preventDefault();
   }, { capture: true });
 }
 

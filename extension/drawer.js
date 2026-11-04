@@ -150,7 +150,7 @@
     (document.documentElement || document.body || document.head).appendChild(host);
     els = { trigger, drawer, pin, grip, frame: null };
     applyWidth();
-    swallowZoomGestures();
+    swallowZoomGestures(drawer);                     // 只蓋抽屜殼；觸發條（常駐）不攔
     wire();
   }
 
@@ -251,16 +251,17 @@
   // 也不碰縮放級別；事件照樣往下路由——巢狀 iframe（OOPIF）裡的滾輪不浮到本文件，
   // 那一層由面板頁自己的 non-passive handler 擋（stack.js 畫布＝相機遠近、main.js
   // 其餘處＝介面縮放，兩邊都 preventDefault），所以這裡只蓋抽屜殼外露的部分
-  // （頂列、把手、觸發條）。縮放快捷鍵同理：焦點落在抽屜殼內時 Ctrl/Cmd ＋ -/=/0
-  // 在這裡擋；焦點在 iframe 內的由 sidepanel.js（drawer 模式）與面板頁各擋各的。
-  function swallowZoomGestures() {
-    host.addEventListener('wheel', e => {
+  // （頂列、把手）。掛在 .d 不掛 host：觸發條常駐可見，抽屜收著時條上的
+  // ctrl+滾輪要照常縮放頁面。縮放快捷鍵同理：焦點落在抽屜殼內時 Ctrl/Cmd ＋ -/=/0
+  // 在這裡擋——按 e.code 比實體鍵，不隨鍵盤佈局漂移；焦點在 iframe 內的由
+  // sidepanel.js（drawer 模式）與面板頁各擋各的。
+  const ZOOM_KEY_CODES = new Set(['Equal', 'Minus', 'Digit0', 'Numpad0', 'NumpadAdd', 'NumpadSubtract']);
+  function swallowZoomGestures(root) {
+    root.addEventListener('wheel', e => {
       if (e.ctrlKey) e.preventDefault();             // 被取消的 ctrl+wheel 不做整頁縮放
     }, { capture: true, passive: false });
-    host.addEventListener('keydown', e => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && ['+', '-', '=', '0', '_'].includes(e.key)) {
-        e.preventDefault();
-      }
+    root.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && ZOOM_KEY_CODES.has(e.code)) e.preventDefault();
     }, { capture: true });
   }
 
