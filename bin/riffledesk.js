@@ -224,7 +224,8 @@ command. It never loops (stop_hook_active), and any error — a missing or
 half-written transcript, garbage input — exits silently so the nudge can never
 block the agent.
 
-  --settings <path>   settings file (default ~/.claude/settings.json; ~ expands)
+  --settings <path>   settings file (default $CLAUDE_CONFIG_DIR/settings.json or
+                      ~/.claude/settings.json; ~ expands)
 
 install merges into the existing file: other hooks and keys stay untouched, a
 <settings>.bak copy is written first, and a second run changes nothing. A

@@ -28,11 +28,11 @@ function fakeHome() {
 
 // stdin is always ended (hook check reads it to EOF); every run gets a
 // throwaway HOME so the real ~/.claude is never touched.
-function run(args, { home = fakeHome(), stdin = null } = {}) {
+function run(args, { home = fakeHome(), stdin = null, envExtra = {} } = {}) {
   return new Promise(resolve => {
     const proc = spawn(process.execPath, [BIN, ...args], {
       cwd: TMP,
-      env: { ...process.env, HOME: home, USERPROFILE: home, RIFFLEDESK_BROWSER_CMD: 'definitely-not-a-browser' },
+      env: { ...process.env, ...envExtra, HOME: home, USERPROFILE: home, RIFFLEDESK_BROWSER_CMD: 'definitely-not-a-browser' },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true
     });
@@ -207,6 +207,52 @@ test('install refuses a wrongly-shaped hooks.Stop instead of clobbering it', asy
   assert.equal(r.code, 2);
   assert.match(r.err, /unexpected shape/);
   assert.deepEqual(JSON.parse(fs.readFileSync(f, 'utf8')), original);
+});
+
+test('install tolerates a UTF-8 BOM in the settings file', async () => {
+  const f = settingsFile();
+  fs.writeFileSync(f, '﻿' + JSON.stringify({ keep: 1 }));
+  const r = await run(['hook', 'install', '--settings', f]);
+  assert.equal(r.code, 0, `install failed: ${r.err}`);
+  const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.equal(data.keep, 1);
+  assert.ok(Array.isArray(data.hooks.Stop));
+});
+
+test('install honors CLAUDE_CONFIG_DIR over ~/.claude', async () => {
+  const home = fakeHome();
+  const cfg = path.join(TMP, `cfg-${++seq}`);
+  const r = await run(['hook', 'install'], { home, envExtra: { CLAUDE_CONFIG_DIR: cfg } });
+  assert.equal(r.code, 0, `install failed: ${r.err}`);
+  assert.ok(fs.existsSync(path.join(cfg, 'settings.json')), 'settings written under CLAUDE_CONFIG_DIR');
+  assert.equal(fs.existsSync(path.join(home, '.claude', 'settings.json')), false, 'not under ~/.claude');
+});
+
+test('install then uninstall keeps the pre-install .bak (first backup wins)', async () => {
+  const f = settingsFile();
+  const original = { model: 'opus' };
+  fs.writeFileSync(f, JSON.stringify(original));
+  assert.equal((await run(['hook', 'install', '--settings', f])).code, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${f}.bak`, 'utf8')), original, '.bak after install');
+  assert.equal((await run(['hook', 'uninstall', '--settings', f])).code, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${f}.bak`, 'utf8')), original,
+    'uninstall must not overwrite the pre-install .bak with the hooked state');
+});
+
+test('install through a symlinked settings file writes the real target', async () => {
+  const target = path.join(TMP, `real-settings-${++seq}.json`);
+  const link = settingsFile();
+  fs.writeFileSync(target, JSON.stringify({ keep: 1 }));
+  try { fs.symlinkSync(target, link); } catch (err) {
+    // Windows without developer mode / privileges cannot create symlinks
+    assert.ok(['EPERM', 'EACCES', 'ENOSYS'].includes(err.code), err.message);
+    return;
+  }
+  const r = await run(['hook', 'install', '--settings', link]);
+  assert.equal(r.code, 0, `install failed: ${r.err}`);
+  assert.ok(fs.lstatSync(link).isSymbolicLink(), 'the symlink itself survives');
+  const data = JSON.parse(fs.readFileSync(target, 'utf8'));
+  assert.ok(Array.isArray(data.hooks.Stop), 'the hook landed in the real target');
 });
 
 // ---------- uninstall / status ----------
@@ -459,4 +505,39 @@ test('hookCommand matches the idempotency regex, status finds its own entry', ()
   assert.ok(hooklib.HOOK_CMD_RE.test('riffledesk hook check'), 'bare form recognized');
   assert.ok(hooklib.HOOK_CMD_RE.test('riffledesk.cmd hook check'), '.cmd form recognized');
   assert.ok(!hooklib.HOOK_CMD_RE.test('riffledesk open a.md'), 'open is not the hook');
+  assert.ok(!hooklib.HOOK_CMD_RE.test('xriffledesk hook check'), 'a lookalike prefix must not match');
+  assert.ok(!hooklib.HOOK_CMD_RE.test('riffledesk hook checkpoint'), 'a longer subcommand must not match');
+});
+
+test('meta entries and command wrappers do not reset the span', () => {
+  const lines = [
+    userText('real request'),
+    writeCall('D:/work/a.md'),
+    JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: 'slash wrapper text' } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: '<local-command-stdout>done</local-command-stdout>' } }),
+    toolResult(),
+    writeCall('D:/work/b.md')
+  ].join('\n');
+  assert.deepEqual(hooklib.analyzeTail(lines).files, ['D:/work/a.md', 'D:/work/b.md'],
+    'meta/stdout entries are not a user boundary');
+});
+
+test('MultiEdit file_path and NotebookEdit notebook_path are collected', () => {
+  const lines = [
+    userText('go'),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'm1', name: 'MultiEdit', input: { file_path: 'D:/work/multi.md' } }
+    ] } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'n1', name: 'NotebookEdit', input: { notebook_path: 'D:/work/nb.md' } }
+    ] } })
+  ].join('\n');
+  assert.deepEqual(hooklib.analyzeTail(lines).files, ['D:/work/multi.md', 'D:/work/nb.md']);
+});
+
+test('a directory named x.md is not a deliverable (regular files only)', () => {
+  const dir = path.join(TMP, `dirmd-${++seq}`, 'fake.md');
+  fs.mkdirSync(dir, { recursive: true });
+  const kept = hooklib.deliverableFiles([dir], { claudeDir: path.join(TMP, 'nope', '.claude') });
+  assert.deepEqual(kept, []);
 });

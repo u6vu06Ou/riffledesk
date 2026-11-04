@@ -11,7 +11,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 // Matches our installed command in any form (bare shim, .cmd, node + abs path).
-const HOOK_CMD_RE = /riffledesk(\.cmd|\.js)?["']?\s+hook\s+check\b/;
+// Bounded on both sides so foreign commands like `xriffledesk hook checkpoint`
+// are not mistaken for the hook.
+const HOOK_CMD_RE = /\briffledesk(\.cmd|\.js)?["']?\s+hook\s+check\b(?![\w-])/;
 // A Bash/PowerShell call that already handed files to the user.
 const SHOWN_RE = /riffledesk(\.cmd|\.js)?["']?\s+(open|show)\b/;
 
@@ -26,7 +28,9 @@ const SKIP_BASENAMES = new Set(['agents.md', 'claude.md', 'memory.md', 'gemini.m
 const TAIL_BYTES = 2 * 1024 * 1024;
 
 function defaultSettingsPath() {
-  return path.join(os.homedir(), '.claude', 'settings.json');
+  // Claude Code reads CLAUDE_CONFIG_DIR instead of ~/.claude when it is set
+  const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  return path.join(dir, 'settings.json');
 }
 
 // Always the absolute node path: on Windows the bare `riffledesk` shim is a
@@ -59,10 +63,21 @@ function readSettings(file) {
     if (err.code === 'ENOENT') return { data: {}, existed: false };
     throw err;
   }
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);   // tolerate a UTF-8 BOM
   let data;
   try { data = JSON.parse(text); } catch (_) { throw invalidJson(file); }
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw invalidJson(file);
   return { data, existed: true };
+}
+
+// Dotfiles setups often point ~/.claude/settings.json at a repo file; rename
+// would replace the symlink itself, so writes go to the real target.
+function resolveSymlink(file) {
+  try {
+    const st = fs.lstatSync(file);
+    if (st.isSymbolicLink()) return fs.realpathSync(file);
+  } catch (_) {}
+  return file;
 }
 
 // The hooks.Stop array, creating the containers on demand. A present-but-
@@ -87,12 +102,13 @@ function hasOurEntry(groups) {
   return false;
 }
 
-// Windows hands out EPERM/EBUSY on a rename while a scanner holds the file.
+// Windows hands out EPERM/EBUSY on a rename while a scanner holds the file;
+// EACCES nearly never clears on its own, so it is not retried.
 function renameWithRetry(from, to, attempts = 5) {
   for (let i = 0; ; i++) {
     try { return fs.renameSync(from, to); }
     catch (err) {
-      const transient = err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'EACCES';
+      const transient = err.code === 'EPERM' || err.code === 'EBUSY';
       if (!transient || i === attempts - 1) throw err;
       const until = Date.now() + 40 * (i + 1);
       while (Date.now() < until) { /* brief spin */ }
@@ -100,24 +116,40 @@ function renameWithRetry(from, to, attempts = 5) {
   }
 }
 
-// Temp file + rename: a crash mid-write leaves the old settings in place.
+// Temp file + fsync + rename: a crash mid-write leaves the old settings in
+// place, and the temp file keeps the original file's permission bits so a
+// 0600 settings.json (it can hold env API keys) is not silently loosened to
+// the umask default.
 function writeSettings(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  let mode = null;
+  try { mode = fs.statSync(file).mode & 0o777; } catch (_) {}
   const tmp = `${file}.rdtmp-${process.pid}-${Date.now().toString(36)}`;
   try {
-    fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, `${JSON.stringify(data, null, 2)}\n`);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (mode !== null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }
     renameWithRetry(tmp, file);
+    try { const dfd = fs.openSync(path.dirname(file), 'r'); try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); } } catch (_) {}
   } catch (err) {
     try { fs.rmSync(tmp, { force: true }); } catch (_) {}
     throw err;
   }
 }
 
+// First backup wins: an install → uninstall cycle must not overwrite the
+// pre-install .bak with the hooked state.
 function backupOnce(file) {
-  fs.copyFileSync(file, `${file}.bak`);
+  if (!fs.existsSync(`${file}.bak`)) fs.copyFileSync(file, `${file}.bak`);
 }
 
 function install(file, binPath) {
+  file = resolveSymlink(file);
   const { data, existed } = readSettings(file);
   const groups = stopGroups(data, file);
   if (hasOurEntry(groups)) {
@@ -133,6 +165,7 @@ function install(file, binPath) {
 }
 
 function uninstall(file) {
+  file = resolveSymlink(file);
   const { data, existed } = readSettings(file);
   if (!existed) return { changed: false, file, message: `not installed (no settings file): ${file}` };
   if (data.hooks === undefined) return { changed: false, file, message: 'not installed — nothing removed' };
@@ -201,20 +234,28 @@ function readTail(file, max = TAIL_BYTES) {
   }
 }
 
-// A genuine user turn: typed text, not a tool_result stitched in by the harness.
+// A genuine user turn: typed text, not a tool_result stitched in by the
+// harness, not a meta entry (slash-command wrappers, local-command stdout).
 function isGenuineUser(entry) {
-  if (!entry || entry.type !== 'user') return false;
+  if (!entry || entry.type !== 'user' || entry.isMeta === true) return false;
   const c = entry.message && entry.message.content;
-  if (typeof c === 'string') return c.trim().length > 0;
+  if (typeof c === 'string') {
+    const t = c.trim();
+    return t.length > 0 && !t.startsWith('<');
+  }
   if (Array.isArray(c)) {
     return c.some(b => b && b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0);
   }
   return false;
 }
 
-// Walk the entries after the last genuine user message: collect the files
-// Write/Edit/NotebookEdit touched, and whether a Bash/PowerShell call already
-// ran `riffledesk open|show`.
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
+
+// Walk the entries after the last genuine user message: collect the files the
+// write-family tools touched, and whether a Bash/PowerShell call already ran
+// `riffledesk open|show`. If no genuine user message appears in the tail, the
+// turn simply started before the 2 MB window, so the whole tail is in scope.
 function analyzeTail(text) {
   const entries = [];
   for (const line of String(text || '').split('\n')) {
@@ -236,9 +277,12 @@ function analyzeTail(text) {
     for (const block of content) {
       if (!block || block.type !== 'tool_use') continue;
       const input = block.input || {};
-      if (block.name === 'Write' || block.name === 'Edit' || block.name === 'NotebookEdit') {
-        if (typeof input.file_path === 'string' && input.file_path) files.push(input.file_path);
-      } else if (block.name === 'Bash' || block.name === 'PowerShell') {
+      if (WRITE_TOOLS.has(block.name)) {
+        // NotebookEdit calls it notebook_path; the others file_path
+        const fp = typeof input.file_path === 'string' && input.file_path ? input.file_path
+          : typeof input.notebook_path === 'string' && input.notebook_path ? input.notebook_path : null;
+        if (fp) files.push(fp);
+      } else if (SHELL_TOOLS.has(block.name)) {
         if (typeof input.command === 'string' && SHOWN_RE.test(input.command)) shown = true;
       }
     }
@@ -257,8 +301,13 @@ function isUnderDir(abs, dir) {
   return a === d || a.startsWith(d + path.sep);
 }
 
-// Keep only files that look like user-facing deliverables and still exist.
-function deliverableFiles(files, { claudeDir = path.join(os.homedir(), '.claude'), exists = fs.existsSync } = {}) {
+// Keep only files that look like user-facing deliverables and still exist
+// (a regular file — a directory named x.md does not count).
+function isRegularFile(p) {
+  try { return fs.statSync(p).isFile(); } catch (_) { return false; }
+}
+
+function deliverableFiles(files, { claudeDir = path.join(os.homedir(), '.claude'), exists = isRegularFile } = {}) {
   const out = [];
   const seen = new Set();
   for (const raw of files) {
@@ -283,15 +332,16 @@ function deliverableFiles(files, { claudeDir = path.join(os.homedir(), '.claude'
 }
 
 function blockReason(files) {
+  const quote = f => `"${f.replace(/"/g, '\\"')}"`;
   const shown = files.slice(0, 5);
-  const quoted = shown.map(f => `"${f}"`);
+  const quoted = shown.map(quote);
   const extra = files.length > shown.length ? ` (+${files.length - shown.length} more)` : '';
   const cmd = files.length === 1
     ? `riffledesk open ${quoted[0]}`
-    : `riffledesk show ${quoted.join(' ')} --title "一句話說明"`;
+    : `riffledesk show ${quoted.join(' ')} --title "Deliverables"`;
   return `You wrote file(s) the user has not seen yet: ${quoted.join(', ')}${extra}. ` +
     `Before finishing, hand them over with the riffledesk CLI: \`${cmd}\` ` +
-    `(用途：riffledesk open 單檔、riffledesk show 多檔一疊). ` +
+    `(one file: riffledesk open; several: riffledesk show). ` +
     `這是交付提醒：寫完要給使用者看的報告／網頁，先 open/show 再收尾。` +
     `If these are not deliverables for the user (scratch, test or internal files), just reply normally.`;
 }
