@@ -268,21 +268,28 @@ export function disposeSlides(container) {
 
 // ---- 縮圖（thumbs.js 用）：解析 + 第一張投影片的文字行／第一張圖 ----
 // 回 { title, lines, bitmap|null }；fflate 不在直接丟錯（呼叫端畫通用圖示）。
+// parsePptx 會替「全部投影片」的圖各建一個 blob URL；縮圖只用到第一張圖，
+// 而且走 createImageBitmap(blob)——bitmap 解碼完成後像素已離開 blob，所以
+// return 前把 parsed.blobUrls 整批 revoke（renderSlides 那條路另有 liveBlobUrls 管）。
 export async function pptxThumb(buf) {
   const parsed = parsePptx(buf);
-  const slide = parsed.slides[0];
-  if (!slide) return { title: '', lines: [], bitmap: null };
-  const lines = [];
-  for (const item of slide.items) {
-    if (item.type !== 'text') continue;
-    for (const p of item.paras) {
-      const s = (p.text || '').trim();
-      if (s) lines.push({ text: s, pt: p.pt || 0 });
+  try {
+    const slide = parsed.slides[0];
+    if (!slide) return { title: '', lines: [], bitmap: null };
+    const lines = [];
+    for (const item of slide.items) {
+      if (item.type !== 'text') continue;
+      for (const p of item.paras) {
+        const s = (p.text || '').trim();
+        if (s) lines.push({ text: s, pt: p.pt || 0 });
+      }
     }
+    lines.sort((a, b) => b.pt - a.pt);   // 最大字的排前面＝多半是標題
+    let bitmap = null;
+    const pic = slide.items.find(i => i.type === 'pic');
+    if (pic) { try { bitmap = await createImageBitmap(pic.blob); } catch (_) { bitmap = null; } }
+    return { title: lines.length ? lines[0].text : '', lines, bitmap };
+  } finally {
+    for (const u of parsed.blobUrls || []) { try { URL.revokeObjectURL(u); } catch (_) {} }
   }
-  lines.sort((a, b) => b.pt - a.pt);   // 最大字的排前面＝多半是標題
-  let bitmap = null;
-  const pic = slide.items.find(i => i.type === 'pic');
-  if (pic) { try { bitmap = await createImageBitmap(pic.blob); } catch (_) { bitmap = null; } }
-  return { title: lines.length ? lines[0].text : '', lines, bitmap };
 }

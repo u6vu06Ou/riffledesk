@@ -7,8 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { decodePng } from './png-pixels.mjs';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = 'D:/workspace/riffledesk';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5199;
 const BASE = `http://127.0.0.1:${PORT}`;
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';

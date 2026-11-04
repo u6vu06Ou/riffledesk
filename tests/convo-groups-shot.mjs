@@ -5,8 +5,8 @@ import { chromium } from 'playwright-core';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const REPO = 'D:/workspace/3jsfloder';
 const OUT = path.dirname(fileURLToPath(import.meta.url));
+const REPO = path.resolve(OUT, '..');
 const PORT = 5190;
 
 const srv = spawn(process.execPath, [path.join(REPO, 'server.js'), String(PORT)], { stdio: 'ignore' });

@@ -1408,16 +1408,24 @@ function apiEvents(req, res, u) {
 // 投影/疊的檔在 git repo 裡時，附上加減行數（工作區 vs HEAD，未送交也算）——
 // AI 改了既有檔案，卡面標題旁就能標 +N −M。失敗原因很多（不在 repo、還沒 commit、
 // 沒裝 git、新檔 untracked、binary）：統一回 null，徽章純裝飾，絕不擋投影。
-function diffStatOf(abs) {
-  try {
+// 非同步版本：舊的 execFileSync 會把整個事件迴圈卡到 git 跑完（慢碟/大 repo 時
+// /api/project、/api/pile 連其他請求一起停擺）。
+function gitOut(args) {
+  return new Promise((resolve, reject) => {
     // windowsHide: the server itself is launched hidden (bin/riffledesk.js), so every
     // git child we spawn without it gets a brand-new console window — one visible
     // flicker per projected/piled file on Windows.
-    const opt = { stdio: ['ignore', 'pipe', 'ignore'], timeout: 2500, encoding: 'utf8', windowsHide: true };
-    const top = cp.execFileSync('git', ['-C', path.dirname(abs), 'rev-parse', '--show-toplevel'], opt).trim();
+    cp.execFile('git', args, {
+      timeout: 2500, encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024
+    }, (err, out) => { if (err) reject(err); else resolve(String(out)); });
+  });
+}
+async function diffStatOf(abs) {
+  try {
+    const top = (await gitOut(['-C', path.dirname(abs), 'rev-parse', '--show-toplevel'])).trim();
     if (!top) return null;
     const rel = path.relative(top, abs).split(path.sep).join('/');
-    const out = cp.execFileSync('git', ['-C', top, 'diff', '--numstat', 'HEAD', '--', rel], opt).trim();
+    const out = (await gitOut(['-C', top, 'diff', '--numstat', 'HEAD', '--', rel])).trim();
     const m = /^(\d+)\t(\d+)\t/.exec(out);
     if (!m) return null;
     const adds = +m[1], dels = +m[2];
@@ -1457,7 +1465,7 @@ function apiProject(req, res) {
     const rawLine = Number(payload.line);
     const line = Number.isFinite(rawLine) && rawLine > 0 ? Math.floor(rawLine) : null;
     const source = typeof payload.source === 'string' ? payload.source.slice(0, 40) : null;
-    const diff = diffStatOf(abs);
+    const diff = await diffStatOf(abs);
     const data = { path: abs, line, source, at: Date.now(), diff };
     let delivered = 0;
     // 側邊欄（?panel=1 的 SSE 客戶）收不到投影：它沒有閱讀欄，檔案投影要投到完整視窗。
@@ -1574,22 +1582,30 @@ function apiPileList(res) {
 }
 
 function apiPileGet(res, u) {
-  const id = u.searchParams.get('id');
-  if (!id) return sendJson(res, 400, { ok: false, error: 'missing id' });
-  const pile = piles.find(p => p.id === id);
-  if (!pile) return sendJson(res, 404, { ok: false, error: 'no such pile' });
-  const { files } = pileFiles(pile.paths);
-  // 每檔附 git 加減行數（同 apiProject 的規矩：失敗=null，前 60 檔內才查——
-  // 500 檔全查會 spawn 1000 次 git，疊的本體不值得等那麼久）
-  const DIFF_CAP = 60;
-  let diffChecked = 0;
-  for (const f of files) {
-    f.diff = ++diffChecked <= DIFF_CAP ? diffStatOf(f.path) : null;
-  }
-  return sendJson(res, 200, {
-    ok: true, id: pile.id, title: pile.title, source: pile.source,
-    createdAt: pile.createdAt, files, missing: pile.paths.length - files.length
-  });
+  return (async () => {
+    const id = u.searchParams.get('id');
+    if (!id) return sendJson(res, 400, { ok: false, error: 'missing id' });
+    const pile = piles.find(p => p.id === id);
+    if (!pile) return sendJson(res, 404, { ok: false, error: 'no such pile' });
+    const { files } = pileFiles(pile.paths);
+    // 每檔附 git 加減行數（同 apiProject 的規矩：失敗=null，前 60 檔內才查——
+    // 500 檔全查會 spawn 1000 次 git，疊的本體不值得等那麼久）。
+    // 非同步並行、同時最多 4 個 git 子行程，不卡事件迴圈。
+    const DIFF_CAP = 60;
+    const DIFF_CONC = 4;
+    const targets = files.slice(0, DIFF_CAP);
+    let cur = 0;
+    await Promise.all(Array.from({ length: Math.min(DIFF_CONC, targets.length) }, async () => {
+      while (cur < targets.length) {
+        const f = targets[cur++];
+        f.diff = await diffStatOf(f.path);
+      }
+    }));
+    return sendJson(res, 200, {
+      ok: true, id: pile.id, title: pile.title, source: pile.source,
+      createdAt: pile.createdAt, files, missing: pile.paths.length - files.length
+    });
+  })();
 }
 // ================== end piles ==================
 

@@ -14,6 +14,9 @@
   #status { margin-top: 14px; font-size: 12.5px; color: #444; white-space: pre-wrap; }
   label.chk { display: flex; align-items: center; gap: 7px; margin: 18px 0 4px; }
   label.chk input { width: auto; margin: 0; }
+  select#drawerSide { padding: 5px 8px; font-size: 14px; border: 1px solid #bbb; border-radius: 6px; background: #fff; }
+  .sideRow { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; }
+  .sideRow label { margin: 0; font-weight: 600; }
   h2 { font-size: 14px; margin: 22px 0 6px; }
   #debug { font-size: 12px; color: #555; white-space: pre-wrap; background: #f6f6f6; border: 1px solid #ddd;
            border-radius: 6px; padding: 8px 10px; max-height: 260px; overflow: auto; margin: 0; }
@@ -29,8 +32,15 @@
   <button id="save" data-i18n="optSave">存</button>
   <label class="chk"><input id="idleSweep" type="checkbox"> <span data-i18n="optIdle">閒置時自動補拍截圖</span></label>
   <div class="note" data-i18n="optIdleNote"></div>
-  <label class="chk"><input id="autoHideDrawer" type="checkbox"> <span data-i18n="optDrawer">自動收合側欄（滑鼠碰右邊緣展開）</span></label>
+  <label class="chk"><input id="autoHideDrawer" type="checkbox"> <span data-i18n="optDrawer">自動收合側欄（滑鼠碰視窗邊緣展開）</span></label>
   <div class="note" data-i18n="optDrawerNote"></div>
+  <div class="sideRow">
+    <label for="drawerSide" data-i18n="optDrawerSide">抽屜待在</label>
+    <select id="drawerSide">
+      <option value="right" data-i18n="optDrawerSideRight">視窗右邊緣</option>
+      <option value="left" data-i18n="optDrawerSideLeft">視窗左邊緣</option>
+    </select>
+  </div>
   <button id="clearShots" data-i18n="optClearShots">清除截圖快取</button> <span id="clearShotsMsg" class="note"></span>
   <div class="note" data-i18n="optCacheNote"></div>
   <div id="status"></div>

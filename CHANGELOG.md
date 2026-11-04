@@ -1,5 +1,15 @@
 # Changes
 
+## Unreleased
+
+- Fix the auto-hide drawer being unreachable on pages with a classic (non-overlay) Windows scrollbar: the invisible trigger strip aligns to the layout viewport, which excludes the scrollbar, so a pointer slammed to the physical screen edge sat on the scrollbar and never touched the strip. The strip is wider now (12 px) and a window-level mousemove fallback runs the same dwell logic once the pointer reaches the layout-viewport edge (classic scrollbars still deliver mousemove past documentElement.clientWidth); button-held moves (scrollbar drags) do not trigger.
+- Add a drawer side setting (right/left, default right) on the options page that live-applies to open tabs: trigger strip, slide direction, and resize grip all mirror.
+- Make the drawer orphan-safe: extension API calls that can throw "Extension context invalidated" after a reload now tear the drawer UI down and clear its occupancy flag instead of leaving a dead shell, so background re-seeding revives it.
+- Bump the extension manifest to 0.2.0 (both Chrome and Firefox copies) so a reload fires onInstalled and re-seeds old tabs. Rule: any change under extension/ requires a manifest version bump.
+- Compute card change badges (git +N −M) off the event loop (async execFile with a concurrency cap in pile listings) instead of blocking it with execFileSync.
+- Release all blob URLs a PPTX parse created once a thumbnail is produced, instead of leaking them until the next render.
+- Replace hardcoded developer machine paths in two test/verification scripts with repo-root-relative resolution.
+
 ## 0.4.0 — 2026-11-03
 
 - Add book-style Markdown reading and optional illustrated and interactive 3D document examples, with bundled three.js assets and no required agent template.

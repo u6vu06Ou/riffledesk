@@ -11,12 +11,14 @@ const debugEl = document.getElementById('debug');
 
 const idleEl = document.getElementById('idleSweep');
 const drawerEl = document.getElementById('autoHideDrawer');
+const drawerSideEl = document.getElementById('drawerSide');
 
-api.storage.local.get({ port: DEFAULT_PORT, idleSweep: true, autoHideDrawer: false }).then(
+api.storage.local.get({ port: DEFAULT_PORT, idleSweep: true, autoHideDrawer: false, drawerSide: 'right' }).then(
   d => {
     portEl.value = d.port == null ? DEFAULT_PORT : d.port;
     idleEl.checked = d.idleSweep !== false;   // 預設開
     drawerEl.checked = d.autoHideDrawer === true;   // 自動收合側欄預設關
+    drawerSideEl.value = d.drawerSide === 'left' ? 'left' : 'right';
   },
   () => { portEl.value = DEFAULT_PORT; }
 );
@@ -29,6 +31,11 @@ idleEl.addEventListener('change', () => {
 // 自動收合側欄開關：即改即存，內容腳本監聽 storage 變化即時套用到已開分頁
 drawerEl.addEventListener('change', () => {
   api.storage.local.set({ autoHideDrawer: !!drawerEl.checked }).catch(() => {});
+});
+
+// 抽屜待在左邊或右邊：即改即存（內容腳本拆掉舊 UI 重建，不用重整分頁）
+drawerSideEl.addEventListener('change', () => {
+  api.storage.local.set({ drawerSide: drawerSideEl.value === 'left' ? 'left' : 'right' }).catch(() => {});
 });
 
 // 「清除截圖快取」：叫背景把記憶體＋IndexedDB 的截圖一次清掉
