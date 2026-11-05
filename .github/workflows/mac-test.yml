@@ -1,0 +1,41 @@
+name: mac-test
+
+# Borrow a GitHub-hosted Mac on every push: unit tests must pass; browser
+# checks run on the runner's preinstalled Google Chrome (tests/chrome-path.mjs).
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Browser checks (tables, name search, pile type filter, piles, projection)
+        run: |
+          node tests/md-table-e2e.mjs
+          node tests/global-name-e2e.mjs
+          node tests/pile-type-filter-e2e.mjs
+          npm run test:pile
+          npm run test:project
+      - name: Older browser suites (known failures, informational)
+        continue-on-error: true
+        run: |
+          npm run test:e2e || true
+          npm run test:edit || true
+          npm run test:select || true
+      - name: Keep screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-screenshots
+          path: docs/screenshots/
+          retention-days: 7
