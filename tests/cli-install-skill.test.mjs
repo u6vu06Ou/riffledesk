@@ -191,7 +191,7 @@ test('backups are pruned to the newest few', async () => {
   const names = fs.readdirSync(backupRoot(first.home));
   assert.ok(names.length <= 10, `expected at most 10 backups, got ${names.length}`);
   const bodies = names.map(n => fs.readFileSync(path.join(backupRoot(first.home), n, 'SKILL.md'), 'utf8'));
-  assert.ok(bodies.includes('edit 11\n'), 'the newest backup survives');
+  assert.ok(bodies.includes('edit 11\n'), `the newest backup survives: ${JSON.stringify(names.map((n, i) => [n, bodies[i]]))}`);
 });
 
 test('prune drops the chronologically oldest backups (same-second lexicographic trap)', async () => {
