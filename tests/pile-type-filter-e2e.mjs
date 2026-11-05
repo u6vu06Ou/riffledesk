@@ -100,7 +100,7 @@ async function main() {
     }
 
     browser = await chromium.launch({ executablePath: CHROME, headless: true });
-    const page = await browser.newPage({ viewport: { width: 1500, height: 900 }, reducedMotion: 'reduce' });
+    const page = await browser.newPage({ viewport: { width: 1500, height: 900 }, reducedMotion: 'reduce', locale: 'zh-TW' });  // assertions read the zh-TW labels; CI runners default to en
     page.on('console', m => { if (m.type() === 'error') consoleErrors.push(m.text()); });
     page.on('pageerror', e => pageErrors.push(e.message));
     await page.addInitScript(() => {
