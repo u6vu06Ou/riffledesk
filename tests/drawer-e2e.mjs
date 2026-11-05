@@ -1,3 +1,4 @@
+import { extensionChrome } from './chrome-path.mjs';
 // tests/drawer-e2e.mjs — REAL Chrome + the real unpacked extension/. 驗收
 // 「自動收合側欄（右緣抽屜）」：設定關→頁面沒有 host；開→滑鼠碰右緣停 120ms
 // 抽屜滑出且 iframe 載入面板頁；移開 400ms 收合；Esc 收合；📌 釘住不收；
@@ -21,8 +22,7 @@ const FIX_PORT = 5192;      // fixture page
 const BASE = `http://127.0.0.1:${PORT}`;
 const FIX = `http://127.0.0.1:${FIX_PORT}`;
 // 同 tabs-ext-e2e：品牌版 Chrome headless 不載擴充，優先用 playwright 自帶 Chromium
-const PW_CHROMIUM = path.join(os.homedir(), 'AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe');
-const CHROME = fs.existsSync(PW_CHROMIUM) ? PW_CHROMIUM : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = extensionChrome();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 function ok(cond, tag, extra) {

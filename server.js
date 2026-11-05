@@ -373,45 +373,109 @@ let config = loadConfig();
 function persistConfig() { saveConfig(config); realScopesCache = null; }
 
 // ---------- local fixed drives / mounts ----------
+// What the front end may open without a config root. Windows stays "every fixed
+// drive letter". POSIX used to offer "/", which made isAllowed() a no-op: the
+// whole system disk (system folders included) counted as browsable. That also
+// made out-of-scope server tests impossible to write portably. POSIX now lists
+// the user's home plus externally mounted volumes — macOS: /Volumes/* except
+// the system root and its volumes ("/" and "Macintosh HD - Data" → /System/Volumes/Data),
+// Linux/WSL: /mnt/* + /media/<user>/* (or all of /media/* if the user is unknown).
+// Anything else goes in config "roots"/"pinned" (README, "Platform notes").
+// io overrides exist so unit tests can simulate darwin/linux on any OS.
 // Returns [{ path, label }] with label === path; the front end builds localized labels.
 // Short-TTL cache so newly attached/unattached volumes show up without a restart
 // and hot paths (allowedScopes per request) do not redo 26 sync stats each time.
-let driveCache = null; // { t, list, fp }
-function localDrives() {
-  const now = Date.now();
-  if (driveCache && now - driveCache.t < 10000) return driveCache.list;
+function collectDrives(io = {}) {
+  const platform = io.platform || process.platform;
+  // Test-only escape hatch: NODE_ENV=test plus RIFFLEDESK_TEST_DRIVES (path-
+  // delimiter separated) replaces the platform scan, so a Windows test run can
+  // reproduce the narrower POSIX scope (home + mounts, not every drive) that a
+  // mac/linux run has. Calls that pass an explicit io.platform keep their own
+  // stubs and ignore it.
+  if (process.env.NODE_ENV === 'test' && !io.platform && process.env.RIFFLEDESK_TEST_DRIVES) {
+    const items = [];
+    const isDir = io.isDir || ((p) => { try { return fs.statSync(p).isDirectory(); } catch (_) { return false; } });
+    for (const p of process.env.RIFFLEDESK_TEST_DRIVES.split(path.delimiter)) {
+      if (p && isDir(p)) items.push({ path: p, label: p });
+    }
+    return items;
+  }
+  const isDir = io.isDir || ((p) => { try { return fs.statSync(p).isDirectory(); } catch (_) { return false; } });
+  const realpath = io.realpath || ((p) => { try { return fs.realpathSync(p); } catch (_) { return p; } });
+  const subdirs = io.subdirs || ((base) => {
+    let ents;
+    try { ents = fs.readdirSync(base, { withFileTypes: true }); } catch (_) { return []; }
+    // include real dirs and symlinked mounts (e.g. /Volumes/My Passport -> /dev mount)
+    return ents.filter(e => e.isDirectory() || e.isSymbolicLink()).map(e => e.name);
+  });
   const items = [];
   const seen = new Set(); // dedupe by realpath (e.g. /Volumes/Macintosh HD -> /)
   const push = (p) => {
-    try { if (!fs.statSync(p).isDirectory()) return; } catch (_) { return; }
+    if (!isDir(p)) return;
     let key;
-    try { key = norm(fs.realpathSync(p)); } catch (_) { key = norm(p); }
+    try { key = norm(realpath(p)); } catch (_) { key = norm(p); }
     if (seen.has(key)) return;
     seen.add(key);
     items.push({ path: p, label: p });
   };
-  if (IS_WIN) {
+  // A mount is only worth offering if it is not the boot volume in disguise:
+  // on Catalina+ "/Volumes/Macintosh HD - Data" realpaths to /System/Volumes/Data,
+  // and "/Volumes/Macintosh HD" to "/" — either would re-open the whole data disk.
+  // (home is exempt on purpose: firmlinks make even the real home realpath there.)
+  const pushMount = (p) => {
+    // POSIX-only branch: compare the raw realpath, not norm() (which would
+    // path.resolve() POSIX paths against the host's cwd on a Windows test run).
+    let real;
+    // an unresolvable realpath (stale sshfs, autofs, dangling link) must not
+    // silently drop a mount that used to be listed: fall through to push().
+    try { real = String(realpath(p)).replace(/\/+$/, '') || '/'; } catch (_) { push(p); return; }
+    if (real === '/' || real === '/System' ||
+        real === '/System/Volumes' || real.startsWith('/System/Volumes/')) return;
+    push(p);
+  };
+  if (platform === 'win32') {
     for (let i = 65; i <= 90; i++) push(String.fromCharCode(i) + ':\\');
-  } else {
-    const subdirsOf = (base) => {
-      let ents;
-      try { ents = fs.readdirSync(base, { withFileTypes: true }); } catch (_) { return; }
-      for (const e of ents) {
-        // include real dirs and symlinked mounts (e.g. /Volumes/Macintosh HD -> /)
-        if (e.isDirectory() || e.isSymbolicLink()) push(path.join(base, e.name));
+    return items;
+  }
+  let home = io.home;
+  if (home === undefined) { try { home = os.homedir(); } catch (_) { home = ''; } }
+  // checked as a string (never excluded by the /System/Volumes guard), plus a
+  // realpath("home") === "/" test so a HOME symlinked to the root cannot slip in
+  let homeIsRoot = home === '/';
+  if (!homeIsRoot && home) {
+    try { if (String(realpath(home)).replace(/\/+$/, '') === '') homeIsRoot = true; } catch (_) {}
+  }
+  if (home && !homeIsRoot) push(home);
+  if (platform === 'darwin') {
+    for (const name of subdirs('/Volumes')) pushMount('/Volumes/' + name);
+  } else { // linux (incl. WSL) and other POSIX: home + common mount points
+    for (const name of subdirs('/mnt')) pushMount('/mnt/' + name);
+    let user = io.user;
+    if (user === undefined) {
+      // env only when the lookup failed (a test-supplied '' must stay unknown,
+      // whatever USER says on the host running the tests)
+      try { user = (io.userInfo || (() => os.userInfo()))().username; } catch (_) { user = ''; }
+      if (!user) user = process.env.USER || process.env.LOGNAME || '';
+    }
+    // an env-supplied name becomes a path segment: refuse separators and ".."
+    if (user && !/^[A-Za-z0-9._-]+$/.test(user)) user = '';
+    // /media itself is a bare directory, not a mount: always go one level deeper.
+    // (/run/media/<user>/* is where udisks2 mounts on Fedora/GNOME.)
+    if (user) {
+      for (const base of ['/media/' + user, '/run/media/' + user]) {
+        for (const name of subdirs(base)) pushMount(base + '/' + name);
       }
-    };
-    push('/');
-    if (process.platform === 'darwin') {
-      subdirsOf('/Volumes');
-    } else { // linux (incl. WSL) and other POSIX: root + common mount points
-      subdirsOf('/mnt');
-      push('/media');
-      let user;
-      try { user = os.userInfo().username; } catch (_) {}
-      if (user) subdirsOf(path.join('/media', user));
+    } else {
+      for (const name of subdirs('/media')) pushMount('/media/' + name);
     }
   }
+  return items;
+}
+let driveCache = null; // { t, list, fp }
+function localDrives() {
+  const now = Date.now();
+  if (driveCache && now - driveCache.t < 10000) return driveCache.list;
+  const items = collectDrives();
   const fp = items.map(i => i.path).join('\n');
   if (driveCache && driveCache.fp !== fp) realScopesCache = null; // mounts changed → redo realpath scopes
   driveCache = { t: now, list: items, fp };
@@ -2455,5 +2519,5 @@ if (require.main === module) {
 }
 
 // small export surface for the bin launcher and tests
-module.exports = { start, norm, isAllowed, searchTree, rawPathFor, rawUrlFor, rawPathToAbs, rewriteFileUrls, tokenEntry,
+module.exports = { start, norm, isAllowed, searchTree, rawPathFor, rawUrlFor, rawPathToAbs, rewriteFileUrls, tokenEntry, collectDrives,
   _eventsState: () => ({ clients: eventClients.size, watchers: dirWatchers.size, convoSubs: convoHub.subs.size }) };

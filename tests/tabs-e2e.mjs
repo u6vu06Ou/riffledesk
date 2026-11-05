@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/tabs-e2e.mjs — acceptance for the browser-tabs mode (extension/ pushes Chrome's
 // open tabs to the server; the UI shows them as cards). Port 5193 (5190–5199 only).
 // The "extension" is simulated from Node: plain fetch with the X-RiffleDesk-Ext header
@@ -16,7 +17,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5193;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const consoleErrors = [];

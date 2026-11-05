@@ -1,3 +1,5 @@
+import { chromeExecutable } from './chrome-path.mjs';
+import { extensionChrome } from './chrome-path.mjs';
 // tests/en-e2e.mjs — English-mode UI audit screenshots. Everything runs with
 // localStorage floderLang='en' (same switch the 中文/English seg buttons use), and
 // each docs/screenshots/en-*.png must be eyeballed before hand-in: no leftover
@@ -15,11 +17,10 @@ const PORT = 5197;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
 const EXT = path.join(ROOT, 'extension');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 // branded Chrome headless does NOT load extensions (proven in tabs-ext-e2e); the
 // options-page shot needs playwright's bundled Chromium instead
-const PW_CHROMIUM = path.join(os.homedir(), 'AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe');
-const EXT_CHROME = fs.existsSync(PW_CHROMIUM) ? PW_CHROMIUM : CHROME;
+const EXT_CHROME = extensionChrome();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const consoleErrors = [];

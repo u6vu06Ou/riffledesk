@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/panel-e2e.mjs — acceptance for the side-panel quick-flip mode (?mode=panel) plus the
 // PWA installability plumbing (manifest/icons/service-worker) and the framing policy.
 // Port 5195 (tests stay in 5190–5199; 5177 is the user's live instance).
@@ -15,7 +16,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5195;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = process.env.RIFFLEDESK_TEST_OUTPUT || path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const consoleErrors = [];

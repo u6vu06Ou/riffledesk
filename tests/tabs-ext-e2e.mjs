@@ -1,3 +1,4 @@
+import { extensionChrome } from './chrome-path.mjs';
 // tests/tabs-ext-e2e.mjs — REAL Chrome + the real unpacked extension/ (no HTTP mock).
 // Launches a persistent context with --load-extension, sets the extension's port to
 // 5194 via its options page (chrome.storage.local), and waits for the service worker
@@ -19,8 +20,7 @@ const PORT = 5194;
 const BASE = `http://127.0.0.1:${PORT}`;
 // 擴充在品牌版 Chrome 的 headless 不會載入（實測）；用 playwright 自帶的 Chromium，
 // 找不到才退回品牌版（那時這支測試會在「service worker 沒起來」上 FAIL，代表環境不支援）
-const PW_CHROMIUM = path.join(os.homedir(), 'AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe');
-const CHROME = fs.existsSync(PW_CHROMIUM) ? PW_CHROMIUM : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = extensionChrome();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 function ok(cond, tag, extra) {

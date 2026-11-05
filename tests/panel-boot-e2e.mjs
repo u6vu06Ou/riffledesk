@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/panel-boot-e2e.mjs — the side-panel open must not stutter or yank the stack.
 // Bug (owner report): switching to side-panel mode stutters for 1–2 s, the 3D cards
 // don't answer the wheel, and then the stack is force-pulled back to the first card.
@@ -17,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5197;
 const BASE = `http://127.0.0.1:${PORT}`;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const pageErrors = [];

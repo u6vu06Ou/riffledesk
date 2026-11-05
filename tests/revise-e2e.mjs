@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/revise-e2e.mjs — acceptance for revise mode ("✎ 改版": click the page, edit in
 // place, save a change list for an AI). Port 5189 (never 5177/5178). Builds its own
 // throwaway fixture and drives headless Chrome through the sandboxed /raw/ iframe.
@@ -15,7 +16,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5189;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const consoleErrors = [];

@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // probe: does Chrome's built-in PDF viewer honor open parameters in the URL fragment?
 // Loads the same 6-page PDF via /api/file with different fragments, screenshots the iframe,
 // and measures (a) toolbar visible?, (b) thumbnail sidebar open?, (c) page width ratio.
@@ -12,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5199;
 const BASE = `http://127.0.0.1:${PORT}`;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pdfprobe-'));

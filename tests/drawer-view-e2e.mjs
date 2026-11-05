@@ -1,3 +1,4 @@
+import { extensionChrome } from './chrome-path.mjs';
 // tests/drawer-view-e2e.mjs — REAL Chrome-family + the real unpacked extension/. 驗收
 // 右緣抽屜的兩個新行為：
 //  (a) 在一般網頁拉出抽屜 → 直接進「網頁（分頁）模式」，且卡堆停在宿主分頁那張卡
@@ -28,8 +29,7 @@ const FIX_PORT = 5194;      // fixture pages (localhost → 與 server 不同站
 const BASE = `http://127.0.0.1:${PORT}`;
 const FIX = `http://localhost:${FIX_PORT}`;
 // 同 tabs-ext/drawer-e2e：品牌版 Chrome headless 不載擴充，優先用 playwright 自帶 Chromium
-const PW_CHROMIUM = path.join(os.homedir(), 'AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe');
-const CHROME = fs.existsSync(PW_CHROMIUM) ? PW_CHROMIUM : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = extensionChrome();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 function ok(cond, tag, extra) {

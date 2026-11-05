@@ -43,11 +43,20 @@ fs.writeFileSync(MD, '# not html\n');
 const CFG = path.join(TMP, 'config.json');
 fs.writeFileSync(CFG, JSON.stringify({ roots: [FIX], pinned: [], convoRoots: [] }, null, 2));
 
+// Browsable scope: on POSIX it is home + mounts and os.tmpdir() is outside it,
+// while on Windows the temp dir just happens to sit on an allowed drive. The
+// server therefore gets TMP and the repo (for the public/ revise agent the
+// token points at) as extra "drives" through the test-only RIFFLEDESK_TEST_DRIVES
+// hook (collectDrives in server.js). OUTSIDE keeps pointing at a path on no
+// drive at all, so the out-of-scope test below stays meaningful, and FIX remains
+// the only indexed root.
+const DRIVES = [TMP, ROOT, process.env.RIFFLEDESK_TEST_DRIVES].filter(Boolean).join(path.delimiter);
+
 let proc;
 function startServer() {
   proc = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), FLODER_CONFIG: CFG, RIFFLEDESK_INDEX: 'off' },
+    env: { ...process.env, NODE_ENV: 'test', RIFFLEDESK_TEST_DRIVES: DRIVES, PORT: String(PORT), FLODER_CONFIG: CFG, RIFFLEDESK_INDEX: 'off' },
     stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
   });
   return new Promise((resolve, reject) => {

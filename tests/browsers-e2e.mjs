@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/browsers-e2e.mjs — 三瀏覽器相容（Chromium / Firefox / WebKit）＋沒有 WebGL 的說明卡驗收
 //
 // A. 每家瀏覽器跑同一條核心流程：
@@ -24,7 +25,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+let CHROME = undefined; // undefined (not null): playwright then uses its bundled Chromium
+try { CHROME = chromeExecutable(); } catch { /* no system chrome: fall back to bundled chromium */ }
 const N_CARDS = 12;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

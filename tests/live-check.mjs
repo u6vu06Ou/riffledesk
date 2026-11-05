@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // live-check.mjs — playwright-core (system Chrome, headless) acceptance for the live features:
 // /api/events pill flow, ⟳ button, R key, ⚙ full-text index switch.
 // Starts its own server on port 5182 with a temp fixture (never touches the repo config).
@@ -13,7 +14,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5182;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-livecheck-'));
 const FIX = path.join(TMP, 'fixture');

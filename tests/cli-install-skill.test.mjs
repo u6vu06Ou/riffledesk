@@ -194,6 +194,29 @@ test('backups are pruned to the newest few', async () => {
   assert.ok(bodies.includes('edit 11\n'), 'the newest backup survives');
 });
 
+test('prune drops the chronologically oldest backups (same-second lexicographic trap)', async () => {
+  const home = fakeHome();
+  assert.equal((await run(['install-skill'], home)).code, 0);
+  const root = backupRoot(home);
+  fs.mkdirSync(root, { recursive: true });
+  // 12 same-second backups: lexicographic order ("…-10" < "…-2") is NOT
+  // chronological past the 10th copy — the order prune must NOT use
+  const stamp = '20260101-000000';
+  for (const suffix of [null, ...Array.from({ length: 11 }, (_, i) => i + 2)]) {
+    const d = path.join(root, `riffledesk-${stamp}${suffix ? '-' + suffix : ''}`);
+    fs.mkdirSync(d);
+    fs.writeFileSync(path.join(d, 'SKILL.md'), `seed ${suffix || 1}\n`);
+  }
+  // one real differing install adds the (newest) 13th backup, then prunes to 10
+  fs.writeFileSync(path.join(installed(home), 'SKILL.md'), 'edited by hand\n');
+  assert.equal((await run(['install-skill'], home)).code, 0);
+  const names = fs.readdirSync(root);
+  assert.ok(names.length <= 10, `expected at most 10 backups, got ${names.length}`);
+  assert.ok(!names.includes(`riffledesk-${stamp}`), 'oldest copy is pruned');
+  assert.ok(!names.includes(`riffledesk-${stamp}-2`), 'second-oldest copy is pruned');
+  assert.ok(names.includes(`riffledesk-${stamp}-12`), 'newest of the same-second series survives');
+});
+
 test('missing --dest value and unknown options exit 2 with usage', async () => {
   const missing = await run(['install-skill', '--dest']);
   assert.equal(missing.code, 2);

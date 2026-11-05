@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // Isolated reader/header, multi-type filtering and embedded-HTML acceptance.
 // Optional screenshots: RIFFLEDESK_TEST_OUTPUT=<existing output directory>.
 import { chromium } from 'playwright-core';
@@ -39,7 +40,7 @@ try {
     server.stdout.on('data', chunk => { log += chunk; if (log.includes('listening')) { clearTimeout(timer); resolve(); } });
     server.stderr.on('data', chunk => { log += chunk; });
   });
-  browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true,
+  browser = await chromium.launch({ executablePath: chromeExecutable(), headless: true,
     args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] });
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, reducedMotion: 'reduce' });
   const errors = []; page.on('pageerror', e => errors.push(e.message));

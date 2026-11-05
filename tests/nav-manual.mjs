@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/nav-manual.mjs — headless visual check for the arrow-key TREE navigation.
 // Builds a small fixture tree under os.tmpdir(), serves it on port 5182 (never
 // 5177/5178/5179), drives headless Chrome with the real keyboard, and writes
@@ -14,7 +15,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5182;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

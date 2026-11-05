@@ -247,7 +247,8 @@ test('secrets + undo suite', async (t) => {
     assert.equal(fs.existsSync(a), true, 'second undo restores the very first name');
   });
 
-  const binTest = IS_WIN ? (n, f) => t.test(n, f) : (n, f) => t.test.skip(n, f);
+  // (t.test.skip is not a TestContext method; the { skip } option is the supported API)
+  const binTest = IS_WIN ? (n, f) => t.test(n, f) : (n, f) => t.test(n, { skip: 'Windows recycle bin only' }, f);
   await binTest('trash → undo restores from the real recycle bin', async () => {
     const name = `riffle-trashundo-${process.pid}-${Date.now()}.txt`;
     const p = path.join(FIX, name);

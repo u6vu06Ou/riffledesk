@@ -1,3 +1,4 @@
+import { extensionChrome } from './chrome-path.mjs';
 // tests/drawer-scrollbar-e2e.mjs — REAL Chromium + 真 unpacked extension/。
 // 驗收三件事：
 //  (1) 傳統捲軸死區修正：觸發條對齊「版面視口」邊緣，有傳統直捲軸時滑鼠停在
@@ -32,8 +33,7 @@ const FIX_PORT = 5196;      // fixture page 127.0.0.1:5196（自家頁 skipSelf 
 const BASE = `http://127.0.0.1:${PORT}`;
 const FIX = `http://127.0.0.1:${FIX_PORT}`;
 // 同 drawer-e2e：品牌版 Chrome headless 不載擴充，用 playwright 自帶 Chromium
-const PW_CHROMIUM = path.join(os.homedir(), 'AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe');
-const CHROME = fs.existsSync(PW_CHROMIUM) ? PW_CHROMIUM : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = extensionChrome();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const pageErrors = [];

@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/pile-e2e.mjs — acceptance for piles (AI hands over a shortlist as one stack).
 // Port 5191 (never 5177/5178/5179). Own throwaway fixture, headless Chrome, the same
 // Notification/AudioContext stubs as project-e2e. Anything of ours on screen is checked
@@ -14,7 +15,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5191;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const consoleErrors = [];
@@ -177,12 +178,12 @@ async function main() {
   await page.evaluate(() => window.__dbg.selectChip('image'));
   await sleep(500);
   ok((await cardNames(page)).size === 3, 'image-only folder filter keeps all three delivered notes');
-  ok(/此疊顯示全部|All files in this pile/.test(await page.locator('#chips summary').innerText()), 'type control explains that piles show everything');
+  ok(/整疊都顯示|All files in this pile/.test(await page.locator('#chips summary').innerText()), 'type control explains that piles show everything');
   ok(await page.locator('#projPiles .pile-row.sel .cnt').innerText() === '3', 'pile count stays independent of folder filters');
   await page.locator('#pathBar .pile-back').click();
   await sleep(500);
   ok((await names(page)).length === 0, 'leaving a pile restores the image-only folder filter');
-  ok(!/此疊顯示全部|All files in this pile/.test(await page.locator('#chips summary').innerText()), 'folder type label returns after leaving a pile');
+  ok(!/整疊都顯示|All files in this pile/.test(await page.locator('#chips summary').innerText()), 'folder type label returns after leaving a pile');
   await page.evaluate(id => window.__dbg.pileOpen(id), rows[0]);
   await page.waitForFunction(() => window.__dbg.pileState());
   ok((await cardNames(page)).size === 3, 'entering a pile with an existing image filter still shows every delivered note');

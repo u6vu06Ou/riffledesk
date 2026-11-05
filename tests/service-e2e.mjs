@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 import { chromium } from 'playwright-core';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -26,7 +27,7 @@ let browser;
 try {
   await run(['--no-open']);
   const first = await fetch(`${BASE}/api/service`).then(r => r.json());
-  browser = await chromium.launch({ executablePath: process.env.CHROME || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', headless: true });
+  browser = await chromium.launch({ executablePath: chromeExecutable(), headless: true });
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));

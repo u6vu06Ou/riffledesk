@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // e2e acceptance for 3jsfloder v4 — playwright-core + system Chrome, port 5178.
 // 規格重點（v4 取景規則改版）：
 //  1. 以寬度為主：前排卡投影寬 ≥ 堆視區寬 38%（v5 密排弱透視：frontWidth=0.38，以密換可見張數），水平置中 <3% 誤差。
@@ -21,7 +22,7 @@ const FIX = path.join(ROOT, 'tests', 'fixtures');
 // 都沒有就退回夾具 size40（40 個 .md）——這樣沒有個人資料夾也能跑完整套。
 const REAL_DIR = process.env.RIFFLE_EXTRA_ROOT || 'D:\\workspace\\cae';
 const CAE = fs.existsSync(REAL_DIR) ? REAL_DIR : path.join(FIX, 'size40');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const results = { consoleErrors: [], asserts: [], perf: {} };

@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // 驗收截圖：左欄對話區改成「24 小時內／更早」兩個摺疊群組
 // 用法：node shot.mjs  （自起 5190 伺服器，跑完關掉）
 import { spawn } from 'node:child_process';
@@ -13,7 +14,7 @@ const srv = spawn(process.execPath, [path.join(REPO, 'server.js'), String(PORT)]
 process.on('exit', () => srv.kill());
 await new Promise(r => setTimeout(r, 1200));
 
-const browser = await chromium.launch({ channel: 'msedge' });
+const browser = await chromium.launch({ executablePath: chromeExecutable() });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 page.on('pageerror', e => console.log('PAGEERROR:', e.message));
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });

@@ -144,12 +144,18 @@ test('save suite', async (t) => {
   });
 
   await t.test('outside allowed scope refused', async () => {
-    // any NON-EXISTENT drive letter is outside every allowed scope
+    // a path that is outside every allowed scope on any OS: on Windows any
+    // non-existent drive letter; on POSIX the drives list is home + mounts
+    // only, so /no/such/… never qualifies (the repo may well live under home)
     let outside = null;
-    for (const letter of 'ZYXWVUTSRQPONMLKJIHG') {
-      if (!fs.existsSync(letter + ':\\')) { outside = letter + ':\\riffle-nope-9x\\f.txt'; break; }
+    if (process.platform === 'win32') {
+      for (const letter of 'ZYXWVUTSRQPONMLKJIHG') {
+        if (!fs.existsSync(letter + ':\\')) { outside = letter + ':\\riffle-nope-9x\\f.txt'; break; }
+      }
+    } else {
+      outside = '/no/such/riffle-nope-9x/f.txt';
     }
-    assert.ok(outside, 'no non-existent drive letter available for the scope test');
+    assert.ok(outside, 'no out-of-scope path available for the scope test');
     const r = await post('/api/save', { path: outside, content: 'y\n', baseMtime: 1, baseSize: 1 });
     assert.equal(r.status, 403, JSON.stringify(r.body));
   });

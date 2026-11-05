@@ -124,14 +124,12 @@ test('fileops suite', async (t) => {
   await t.test('rename: 404 missing file, 400 for a directory, 403 outside scope', async () => {
     assert.equal((await post('/api/rename', { path: path.join(FIX, 'nope.txt'), newName: 'x.txt' })).status, 404);
     assert.equal((await post('/api/rename', { path: path.join(FIX, 'subdir'), newName: 'x' })).status, 400);
-    if (IS_WIN) {
-      let outside = null;
-      for (let i = 90; i >= 68 && !outside; i--) {
-        const letter = String.fromCharCode(i);
-        if (!fs.existsSync(letter + ':\\')) outside = letter + ':\\riffle-nope-9x\\f.txt';
-      }
-      assert.equal((await post('/api/rename', { path: outside, newName: 'x.txt' })).status, 403);
-    }
+    // a path outside every scope on any OS: POSIX drives are home + mounts
+    // only, so /no/such/… never qualifies; Windows uses a dead drive letter
+    const outside = IS_WIN
+      ? (() => { for (let i = 90; i >= 68; i--) { const L = String.fromCharCode(i); if (!fs.existsSync(L + ':\\')) return L + ':\\riffle-nope-9x\\f.txt'; } throw new Error('no free drive letter'); })()
+      : '/no/such/riffle-nope-9x/f.txt';
+    assert.equal((await post('/api/rename', { path: outside, newName: 'x.txt' })).status, 403);
   });
 
   await t.test('rename: a good rename returns the new file-info', async () => {
@@ -186,14 +184,10 @@ test('fileops suite', async (t) => {
     assert.equal((await post('/api/open', { path: path.join(FIX, 'ghost.md') })).status, 404);
     assert.equal((await post('/api/reveal', { path: path.join(FIX, 'ghost.md') })).status, 404);
     assert.equal((await post('/api/reveal', { path: path.join(FIX, 'subdir') })).status, 400);
-    if (IS_WIN) {
-      let outside = null;
-      for (let i = 90; i >= 68 && !outside; i--) {
-        const letter = String.fromCharCode(i);
-        if (!fs.existsSync(letter + ':\\')) outside = letter + ':\\riffle-nope-9x\\f.txt';
-      }
-      assert.equal((await post('/api/open', { path: outside })).status, 403);
-      assert.equal((await post('/api/reveal', { path: outside })).status, 403);
-    }
+    const outside2 = IS_WIN
+      ? (() => { for (let i = 90; i >= 68; i--) { const L = String.fromCharCode(i); if (!fs.existsSync(L + ':\\')) return L + ':\\riffle-nope-9x\\f.txt'; } throw new Error('no free drive letter'); })()
+      : '/no/such/riffle-nope-9x/f.txt';
+    assert.equal((await post('/api/open', { path: outside2 })).status, 403);
+    assert.equal((await post('/api/reveal', { path: outside2 })).status, 403);
   });
 });

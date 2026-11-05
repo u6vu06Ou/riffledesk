@@ -148,6 +148,12 @@ agent 收尾時 hook 才跑一次：掃對話紀錄尾巴，如果 Write/Edit �
 
 Chromium、Firefox、Safari（後兩者最新版）。卡片堆需要 WebGL；不支援的電腦會顯示一張說明卡，不是卡片堆（樹、搜尋、閱讀和編輯都照常可用，檔案也照樣開得起來）。跑到一半掉 context（顯示卡驅動重置）時同一張說明卡會蓋住卡片欄，並給一顆重新載入。沒有 2D 備援，所以舊的 `?flat=1` 書籤還能開，但已經沒有作用。伺服器 Windows 和 POSIX 都能跑；回收筒復原和在檔案總管中選取是 Windows 專屬。
 
+## 平台備註
+
+- **不加設定能瀏覽什麼。** Windows：所有固定磁碟機（`C:\`、`D:\`…）。macOS：你的家目錄加上 `/Volumes` 下的外接磁碟（刻意排除指到系統根 `/` 的 *Macintosh HD* 別名與指到 `/System/Volumes/Data` 的 *Macintosh HD - Data*，避免整顆系統碟默默變成可瀏覽）。Linux／WSL：家目錄加上 `/mnt/*` 與 `/media/<使用者>/*`（udisks2 桌面另有 `/run/media/<使用者>/*`；查不出使用者時列出 `/media/*`）。範圍外的路徑（例如 `/opt/data`）在 `config.json` 的 `roots` 加一行即可（或用 `pinned` 釘進來）。
+- **three.js 走 CDN**（`cdn.jsdelivr.net` import map）：第一次開頁需要網路，其餘全部離線本機。
+- **macOS 跑測試。** 單元測試：`node --test --test-concurrency=1 "tests/*.test.mjs"`（無原生相依；用埠 5179 與 5193–5196）。瀏覽器 e2e 會透過 `tests/chrome-path.mjs` 自己找 Chrome（/Applications 下的 Chrome/Chromium/Edge，擴充功能測試優先用 playwright 自帶 Chromium）；要指定別支瀏覽器就設 `CHROME_PATH`，例如 `CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" node tests/e2e.mjs`。
+
 ## 設定
 
 第一次啟動會產生 `config.json`（不進 git；`config.example.json` 是空白範本）。鍵有：`roots`（額外可瀏覽根目錄）、`pinned`（釘選，介面會寫回）、`indexSkipDirs`、`indexMaxMB`、`indexContent`、`secretScan`、`secretScanSkipDirs`、`convoRoots`、`browser`。用 `RIFFLEDESK_CONFIG` 指向別的檔可以隔離一份設定。

@@ -34,6 +34,12 @@ write('zz-magicword-name.md', 'plain note, no content match\n'); // name match o
 write('.hidden/secret.md', 'magicword must NOT be found from a dot-dir\n');
 write('node_modules/pkg/dep.md', 'magicword must NOT be found from node_modules\n');
 write('CaseDir/upper.md', 'case sensitivity test content\n');
+// case behaviour of the FIXTURE's filesystem, probed live: macOS default APFS is
+// case-insensitive (so a case-mangled path resolves), most Linux filesystems are not
+const CI_PROBE = path.join(FIX, 'CaseProbe.SeNtInEl');
+fs.writeFileSync(CI_PROBE, '');
+const FIXTURE_CI = fs.existsSync(path.join(FIX, 'caseprobe.sentinel'));
+fs.rmSync(CI_PROBE, { force: true });
 fs.writeFileSync(path.join(FIX, 'img.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 fs.writeFileSync(path.join(FIX, 'clip.mp4'), Buffer.alloc(64, 7));   // 假影片：只測 HTTP 行為，不解碼
 fs.writeFileSync(path.join(FIX, 'deck.pptx'), Buffer.from('PK\x03\x04 fake pptx bytes'));   // 假 pptx：只測 kind/容量，不解 ZIP
@@ -45,10 +51,20 @@ fs.writeFileSync(CONFIG_PATH, JSON.stringify({ roots: [FIX], pinned: [] }, null,
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// POSIX browse scope is home + mounts, so the temp fixture is out of scope there
+// (on Windows it merely happens to sit on an allowed drive). Declare TMP as a
+// "drive" via the test-only RIFFLEDESK_TEST_DRIVES hook (see collectDrives).
+// An outer value is appended so a Windows run can still be forced narrow. On a
+// plain Windows run the override stays off ('' → hook inactive), which keeps
+// the real drive-letter assertion in the /api/drives test meaningful.
+const DRIVES = (process.env.RIFFLEDESK_TEST_DRIVES || !IS_WIN)
+  ? [TMP, process.env.RIFFLEDESK_TEST_DRIVES].filter(Boolean).join(path.delimiter)
+  : '';
+
 async function startServer(extraEnv = {}) {
   const proc = spawn('node', ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH, RIFFLEDESK_INDEX: 'off', ...extraEnv },
+    env: { ...process.env, NODE_ENV: 'test', RIFFLEDESK_TEST_DRIVES: DRIVES, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH, RIFFLEDESK_INDEX: 'off', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   });
@@ -148,10 +164,15 @@ test('api suite', async (t) => {
         assert.equal(typeof d.path, 'string');
         assert.equal(d.label, d.path); // server no longer sends localized Chinese labels
       }
-      if (IS_WIN) {
+      if (DRIVES) {
+        // test-only override (see RIFFLEDESK_TEST_DRIVES in collectDrives): the
+        // harness simulates a scope, so assert against that instead of the host
+        assert.ok(body.drives.length > 0);
+      } else if (IS_WIN) {
         assert.ok(body.drives.some(d => /^[A-Za-z]:[\\/]$/.test(d.path)));
       } else {
-        assert.ok(body.drives.some(d => d.path === '/'));
+        // POSIX: drives = the user's home + mounted volumes ("/" is deliberately not offered)
+        assert.ok(body.drives.some(d => d.path === os.homedir()), 'expected the user home in drives');
       }
       assert.ok(Array.isArray(body.roots));
     });
@@ -302,26 +323,31 @@ test('api suite', async (t) => {
   }
 });
 
-// ---------- Windows-only: outside-scope 403 (on POSIX scope is "/" by design) ----------
-if (IS_WIN) {
-  test('search: 403 outside allowed scopes', async () => {
-    const proc = await startServer();
-    procs.push(proc);
-    try {
+// ---------- outside-scope 403 (cross-platform since the POSIX drives list shrank
+// from "/" to home + mounts: /no/such/… is out of scope everywhere) ----------
+test('search: 403 outside allowed scopes', async () => {
+  const proc = await startServer();
+  procs.push(proc);
+  try {
+    let outside = null;
+    if (IS_WIN) {
       // pick a drive letter that does not exist
-      let outside = null;
       for (let i = 90; i >= 68 && !outside; i--) { // Z..D
         const letter = String.fromCharCode(i);
         if (!fs.existsSync(letter + ':\\')) outside = letter + ':\\riffle-no-such-root-9x';
       }
-      assert.ok(outside, 'expected at least one nonexistent drive letter');
-      const { status, body } = await getJson(`/api/search?path=${encodeURIComponent(outside)}&q=magicword`);
-      assert.equal(status, 403, JSON.stringify(body));
-    } finally {
-      proc.kill();
+    } else {
+      outside = '/no/such/riffle-root-9x';
     }
-  });
+    assert.ok(outside, 'expected an out-of-scope path for this platform');
+    const { status, body } = await getJson(`/api/search?path=${encodeURIComponent(outside)}&q=magicword`);
+    assert.equal(status, 403, JSON.stringify(body));
+  } finally {
+    proc.kill();
+  }
+});
 
+if (IS_WIN) {
   test('list: case-folded path still resolves (win32 folding rule)', async () => {
     const proc = await startServer();
     procs.push(proc);
@@ -335,13 +361,17 @@ if (IS_WIN) {
     }
   });
 } else {
-  test('list: case-mangled path does not resolve (case-sensitive rule)', async () => {
+  test('list: case-mangled path resolves iff the fixture filesystem is case-insensitive', async () => {
     const proc = await startServer();
     procs.push(proc);
     try {
-      const folded = FIX.split('').map(c => c >= 'a' && c <= 'z' ? c.toUpperCase() : c).join('');
-      const { status } = await getJson(`/api/list?path=${encodeURIComponent(folded)}&exts=.md`);
-      assert.equal(status, 404); // not folded: exact-case path only
+      // mangle only the LEAF ('CaseDir' → 'CASEDIR') so the path stays inside the
+      // fixture scope regardless of the platform's drives; the filesystem decides
+      const mangled = path.join(FIX, 'CASEDIR');
+      const { status } = await getJson(`/api/list?path=${encodeURIComponent(mangled)}&exts=.md`);
+      // case-sensitive FS (most Linux): only the exact-case path resolves → 404;
+      // case-insensitive FS (macOS default APFS): 'CASEDIR' opens 'CaseDir' → 200
+      assert.equal(status, FIXTURE_CI ? 200 : 404, `fixture case-insensitive=${FIXTURE_CI}`);
     } finally {
       proc.kill();
     }

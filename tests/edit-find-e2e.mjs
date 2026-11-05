@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/edit-find-e2e.mjs — acceptance for edit-in-reader + find/replace-in-reader.
 // Port 5184 (never 5177/5178/5179). Builds its own throwaway fixture tree, drives
 // headless Chrome, writes docs/screenshots/{edit-mode,find-bar,conflict}.png
@@ -15,7 +16,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5184;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const consoleErrors = [];

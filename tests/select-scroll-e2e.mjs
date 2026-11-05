@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/select-scroll-e2e.mjs — 點卡＋滾動：卡堆上不再有任何框線、卡片位置一路連續（歐哥 2026-10-30）
 //
 // 症狀（舊版）：點一張卡以後出現虛線框，滾動時框留在原本那張卡上、那張卡一直閃，隔壁卡也跟著跳。
@@ -23,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASE_PORT = Number(process.env.PORT || 0);   // 0＝自己挑一個空的（5190 起）
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const N_CARDS = 60;
 const ARC_W = 680;                                 // 驗收指定的卡堆欄寬（閱讀欄開著）
 const sleep = ms => new Promise(r => setTimeout(r, ms));

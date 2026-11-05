@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/mirror-e2e.mjs — checks for the accessible DOM mirror (public/mirror.js):
 // page innerText must carry the front card + neighbour list, mirror buttons open
 // files in the reader, search mode lists hits with matching lines, the reader's
@@ -15,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5185;
 const BASE = `http://127.0.0.1:${PORT}`;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;

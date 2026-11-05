@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/codetheme-manual.mjs — 程式碼配色的「親眼看」工具：起 5184（不碰 5177/5178/5179），
 // 用暫存 fixture＋真實 public/main.js 開啟各語言程式碼檢視，對 8 款主題各截一張圖
 // （docs/screenshots/codetheme-*.png），同時把 textMs/hlMs 時量印出來給人力回報。
@@ -13,7 +14,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5184;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffle-codetheme-'));
 const RD = p => path.join(TMP, ...p.split('/'));

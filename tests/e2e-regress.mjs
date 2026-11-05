@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/e2e-regress.mjs — permanent regression suite (ported from the lead's
 // ad-hoc manual checks cnt/conv/scrub/img2/hide + secret/undo). Fully
 // self-contained: builds its own fixture tree + fake Claude transcripts under
@@ -17,7 +18,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5186;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const IMAGE_EXTS = '.png,.jpg,.jpeg,.gif,.webp,.svg';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));

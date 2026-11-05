@@ -1,3 +1,4 @@
+import { extensionChrome } from './chrome-path.mjs';
 // tests/panel-button-e2e.mjs — REAL Chrome + the real unpacked extension/.
 // Reproduces the owner's bug: in the full 3-column app, clicking the right-column
 // 「側欄模式」 button opens the side panel on the previewed tab — but right after it
@@ -21,8 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXT = path.join(ROOT, 'extension');
-const PW_CHROMIUM = path.join(os.homedir(), 'AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe');
-const CHROME = fs.existsSync(PW_CHROMIUM) ? PW_CHROMIUM : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = extensionChrome();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 function ok(cond, tag, extra) {

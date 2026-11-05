@@ -1039,10 +1039,23 @@ function backupDirFor(base) {
   }
 }
 
+// Oldest-first order must be CHRONOLOGICAL, not raw lexicographic: once a
+// same-second run reaches the 10th copy, lexicographic order ranks
+// "…-HHMMSS-10" BEFORE "…-HHMMSS-2" ('1' < '2'), so a plain sort() would prune a
+// newer backup while keeping an older one (observed on macOS, where a fast loop
+// of installs lands inside one second-cycle more often).
+const BACKUP_NAME_RE = /^riffledesk-(\d{8}-\d{6})(?:-(\d+))?$/;
+function backupChronoKey(name) {
+  const m = BACKUP_NAME_RE.exec(name);
+  if (!m) return null;
+  // fixed-width fields → a single zero-padded string sorts chronologically
+  return m[1] + '.' + String(m[2] ? Number(m[2]) : 1).padStart(6, '0');
+}
 function pruneBackups(base) {
   const parent = path.join(path.dirname(path.resolve(base)), 'skills-backup');
   let names;
-  try { names = fs.readdirSync(parent).filter(n => n.startsWith('riffledesk-')).sort(); } catch (_) { return; }
+  try { names = fs.readdirSync(parent).filter(n => BACKUP_NAME_RE.test(n)); } catch (_) { return; }
+  names.sort((a, b) => (backupChronoKey(a) < backupChronoKey(b) ? -1 : 1));
   for (const n of names.slice(0, Math.max(0, names.length - BACKUP_KEEP))) {
     try { fs.rmSync(path.join(parent, n), { recursive: true, force: true }); } catch (_) {}
   }

@@ -25,8 +25,12 @@ test('normal path writes and leaves no temp file', () => {
   assert.deepEqual(fs.readdirSync(d), ['a.md']);
 });
 
+// the retry + in-place fallback exists for Windows lock churn (Defender / indexer
+// holding the target); POSIX writeAtomic throws at once on a transient rename error
+const WIN_FALLBACK = { skip: process.platform !== 'win32' && 'Windows-only rename retry + in-place fallback' };
+
 for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
-  test(`transient ${code} that never clears falls back to an in-place write`, () => {
+  test(`transient ${code} that never clears falls back to an in-place write`, WIN_FALLBACK, () => {
     const d = tmpDir(), f = path.join(d, 'a.md');
     fs.writeFileSync(f, 'old\n');
     const real = fs.renameSync;
@@ -37,7 +41,7 @@ for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
   });
 }
 
-test('fallback failure keeps the old bytes and reports the snapshot/restore state', () => {
+test('fallback failure keeps the old bytes and reports the snapshot/restore state', WIN_FALLBACK, () => {
   const d = tmpDir(), f = path.join(d, 'a.md');
   fs.writeFileSync(f, 'old\n');
   const realRename = fs.renameSync, realWrite = fs.writeFileSync;

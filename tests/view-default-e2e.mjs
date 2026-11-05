@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/view-default-e2e.mjs — startup view + the conditional "save / back to my
 // view" prompt bar. Covers:
 //   * no saved view -> default view on load, and no view bar
@@ -20,7 +21,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5197;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 // default view (stack.js POSE_PITCH / orbit defaults)
 const DEFAULT_ORBIT = { yaw: 0, pitch: 41.03, zoom: 1 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));

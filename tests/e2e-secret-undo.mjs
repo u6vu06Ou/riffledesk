@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // e2e acceptance for Feature A (secret-leak warning) + B (Ctrl+Z undo).
 // playwright-core + system Chrome, headless, port 5181 (per ticket).
 // Fixture: tests/fixtures/secretdemo (fake keys only). Screenshots go to
@@ -17,7 +18,7 @@ const SHOTS = path.join(ROOT, 'docs', 'screenshots');
 const FIX = path.join(ROOT, 'tests', 'fixtures');
 const DEMO = path.join(FIX, 'secretdemo');
 const CFG_TMP = path.join(FIX, '_test-config-secret.json');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const results = { consoleErrors: [] };

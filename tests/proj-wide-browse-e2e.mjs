@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/proj-wide-browse-e2e.mjs — 歐哥 2026-11-02 回報「AI 投影網頁後介面卡住」的修法驗收：
 //  投影單檔 → wide 大版面（卡堆藏起來）。此時點左欄樹的資料夾原是「零可見回饋」
 //  （mode 停 wide、卡堆不現形、reader 不動，看起來像整個卡住）。
@@ -14,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5197;
 const BASE = `http://127.0.0.1:${PORT}`;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const pageErrors = [];
 let failed = 0;

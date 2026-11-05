@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/wheel-speed-e2e.mjs — 滾輪依滾動量變速：滾一格＝一張；連滾 30 格＝前進 30 張、約 1.5 秒內到；
 // 中途不丟格、停下時剛好落在整數張。埠 5190–5199 自挑。
 import { chromium } from 'playwright-core';
@@ -8,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const N_CARDS = 120;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;

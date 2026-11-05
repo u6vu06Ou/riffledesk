@@ -29,6 +29,9 @@ const F_QUOTES = path.join(WRITTEN, 'quotes.js');     // written via exec patch 
 const F_GHOST = path.join(WRITTEN, 'ghost.md');       // named only INSIDE quotes.js content — no one wrote it
 fs.writeFileSync(F_ALPHA, '# Alpha\nhello\n');
 fs.writeFileSync(F_BETA, '# Beta\nworld\n');
+// macOS default APFS is case-INSENSITIVE: BETA.MD then resolves to beta.md, so the
+// transcript's case-variant write counts as an existing file even on "POSIX"
+const FS_CI = !IS_WIN && fs.existsSync(F_BETA_UP);
 fs.writeFileSync(F_SORT, "print('sorted')\n");
 fs.writeFileSync(F_REL, 'new\n');
 fs.writeFileSync(F_QUOTES, 'const s = "\\n*** Add File: ghost.md";\n');
@@ -113,7 +116,11 @@ test('convos endpoints', async (t) => {
     assert.ok(cx, 'codex conversation present');
     assert.equal(cl.title, '幫我修一下登入頁的按鈕');   // <command-…> and tool_result lines skipped
     assert.equal(cx.title, '寫一個排序腳本');           // "# AGENTS.md …" instruction dump skipped
-    assert.equal(cl.fileCount, 2);                      // alpha+beta exist; gone.md excluded
+    // win32 folds case (BETA.MD dedupes into beta.md); case-sensitive POSIX drops
+    // BETA.MD (never existed); case-insensitive POSIX (default APFS) keeps it as an
+    // existing entry of its own
+    const betaFiles = IS_WIN ? 2 : (FS_CI ? 3 : 2);
+    assert.equal(cl.fileCount, betaFiles);            // alpha+beta exist; gone.md excluded
     assert.equal(cx.fileCount, 3, JSON.stringify(byId.get('codex:cod-1')));  // sort.py (exec + function_call), rel.md, quotes.js; ghost.md never a write
     for (const c of body.convos) {
       for (const k of ['id', 'agent', 'title', 'project', 'started', 'updated', 'fileCount']) {
@@ -134,7 +141,9 @@ test('convos endpoints', async (t) => {
     if (IS_WIN) {
       assert.equal(body.files.length, 2, 'BETA.MD (case variant) dedupes into beta.md');
     } else {
-      assert.equal(body.files.length, 3, 'posix: different case = different path');
+      // case-insensitive POSIX (default APFS): BETA.MD exists → 3 entries;
+      // case-sensitive POSIX: BETA.MD never existed, filtered out → 2 entries
+      assert.equal(body.files.length, FS_CI ? 3 : 2, `posix + case-insensitive=${FS_CI}`);
     }
     for (const f of body.files) {
       for (const k of ['name', 'path', 'size', 'mtime', 'ext', 'kind']) assert.ok(k in f, `missing ${k}`);

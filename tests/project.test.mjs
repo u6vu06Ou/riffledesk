@@ -120,9 +120,13 @@ test('missing path → 404 and ok:false', async () => {
 });
 
 test('path outside the allowed scopes → 403', async (t) => {
-  // On Windows every existing drive is in scope, so a temp path is always allowed there
-  // (server.test.mjs skips the same way).
-  if (process.platform === 'win32') return t.skip('POSIX only: the scope is "/" on POSIX');
+  // Windows lists every fixed drive as in scope, so a temp path stays allowed
+  // there; on POSIX the drives list is home + mounts only, so TMP is out of scope.
+  // A harness run that simulates the POSIX scope (RIFFLEDESK_TEST_DRIVES) on
+  // Windows makes the assertion meaningful there too — see collectDrives.
+  if (process.platform === 'win32' && !process.env.RIFFLEDESK_TEST_DRIVES) {
+    return t.skip('POSIX only: temp dirs are out of scope there');
+  }
   const r = await post({ path: OUTSIDE_FILE });
   assert.equal(r.status, 403);
   assert.equal(r.body.ok, false);

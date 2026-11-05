@@ -149,6 +149,12 @@ The full audit — every checked location, format, source link and confidence �
 
 Chromium, Firefox and Safari — the last two latest versions. The card stack needs WebGL; on a machine without it, RiffleDesk shows a notice card instead of the stack (the tree, search, reading and editing stay usable, and files still open). If the context is lost mid-session — a graphics driver reset — the same notice covers the card column and offers a reload. There is no 2D fallback, so a stale `?flat=1` bookmark still works but changes nothing. The server is POSIX and Windows; trash-undo and the file-manager reveal are Windows-specific.
 
+## Platform notes
+
+- **What is browsable without extra config.** Windows: every fixed drive letter (`C:\`, `D:\`, …). macOS: your home folder plus external volumes under `/Volumes` (the system-root alias *Macintosh HD → /* and the data volume *Macintosh HD - Data → /System/Volumes/Data* are excluded on purpose, so system folders are not silently browsable). Linux/WSL: your home folder plus `/mnt/*` and `/media/<user>/*` (`/run/media/<user>/*` for udisks2 desktops; every `/media/*` entry when your user cannot be resolved). Anything outside that list — say `/opt/data` — is one line away in `config.json` (`roots`, or drag in with `pinned`).
+- **three.js loads from a CDN** (`cdn.jsdelivr.net` import map), so the first page load needs network access; everything else is fully local.
+- **Running the tests on macOS.** Unit tests: `node --test --test-concurrency=1 "tests/*.test.mjs"` (no native deps; ports 5179 and 5193–5196). The browser e2e scripts find Chrome on their own via `tests/chrome-path.mjs` (Chrome/Chromium/Edge under `/Applications`, or a playwright-bundled Chromium for extension tests); point `CHROME_PATH` at another executable to override, e.g. `CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" node tests/e2e.mjs`.
+
 ## Configuration
 
 `config.json` is created on first start (git-ignored; `config.example.json` is the blank template). Keys: `roots` (extra browsable roots), `pinned` (starred folders, written back by the UI), `indexSkipDirs`, `indexMaxMB`, `indexContent`, `secretScan`, `secretScanSkipDirs`, `convoRoots`, `browser`. Point `RIFFLEDESK_CONFIG` at another file to isolate a profile.
@@ -167,6 +173,8 @@ npm run demo:record   # re-record docs/media from it
 ```
 
 The browser tests drive an installed Chrome through `playwright-core` on ports 5178+ and build their own fixtures in the temp directory, so they never touch your real `config.json` or index.
+
+Unit tests that serve a temp fixture declare it as a "drive" through the test-only `RIFFLEDESK_TEST_DRIVES` variable (path-delimiter separated; honoured by `collectDrives()` only under `NODE_ENV=test`), because the temp directory is outside the POSIX browse scope. Set it on a Windows run to replay the narrower POSIX scope: `NODE_ENV=test RIFFLEDESK_TEST_DRIVES="D:\nonexistent" node --test --test-concurrency=1 "tests/*.test.mjs"`.
 
 ## Licence
 

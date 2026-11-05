@@ -45,6 +45,17 @@ fs.writeFileSync(path.join(OUT, 'out-note.md'), 'the outsideword only exists out
 const CONFIG_PATH = path.join(TMP, 'config.json');
 fs.writeFileSync(CONFIG_PATH, JSON.stringify({ roots: [FIX], pinned: [] }, null, 2));
 
+// Browse scope vs. index scope: on POSIX the allowed scope is home + mounted
+// volumes, and os.tmpdir() (macOS /var/folders/…) is NOT part of it, whereas on
+// Windows the temp dir sits on an allowed drive. So the servers below declare
+// TMP as a "drive" through the test-only RIFFLEDESK_TEST_DRIVES hook (see
+// collectDrives in server.js). TMP is then browsable but is still NOT an
+// indexed root — which is exactly what the deepCount/outside-scope tests need.
+// An outer RIFFLEDESK_TEST_DRIVES value is appended, so a run can still force
+// the narrow POSIX scope on a Windows box (the temp dir alone is the only
+// "drive" here; the rest of C: stays out).
+const DRIVES = [TMP, process.env.RIFFLEDESK_TEST_DRIVES].filter(Boolean).join(path.delimiter);
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const REL = p => p.split('/').join(path.sep);
 
@@ -56,7 +67,7 @@ async function getJson(p) {
 
 const proc = spawn('node', ['server.js'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH },
+  env: { ...process.env, NODE_ENV: 'test', RIFFLEDESK_TEST_DRIVES: DRIVES, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH },
   stdio: ['ignore', 'pipe', 'pipe'],
   windowsHide: true
 });

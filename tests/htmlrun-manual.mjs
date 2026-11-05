@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/htmlrun-manual.mjs — manual acceptance harness for the "run page scripts"
 // feature. Builds a temp fixture (canvas painted by a module script that imports a
 // sibling lib via an absolute file:/// URL + a rename-attempt victim file), starts
@@ -16,7 +17,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5183;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(ROOT, 'docs', 'screenshots');
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;

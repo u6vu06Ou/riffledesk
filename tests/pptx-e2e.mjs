@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/pptx-e2e.mjs — .pptx slides kind 驗收（埠 5192，自起自關）。
 // 夾具：tests/fixtures/deck.pptx（由 tests/fixtures/make_pptx_fixture.py 生成，
 // 3 張投影片：標題／內文含「閃電小螺絲」／一張小圖）。跑法：node tests/pptx-e2e.mjs
@@ -14,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5192;
 const BASE = `http://127.0.0.1:${PORT}`;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const FIXTURE = path.join(ROOT, 'tests', 'fixtures', 'deck.pptx');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;

@@ -1,3 +1,4 @@
+import { chromeExecutable } from './chrome-path.mjs';
 // tests/splitter-tablocal-e2e.mjs — 兩個 UI 修補的驗收（歐哥 2026-11-02 回報）：
 //   1. 三欄模式下「樹｜卡堆」分隔線（#splitter）藏起來拖不到 → 改為 full 以外都能拖
 //   2. file:// 分頁的本地 PDF 在閱讀欄不吃滿（iframe 的 height:100% 落在未定高的
@@ -14,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5198;
 const BASE = `http://127.0.0.1:${PORT}`;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = chromeExecutable();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failed = 0;
 const pageErrors = [];
