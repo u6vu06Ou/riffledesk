@@ -17,7 +17,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---------- fixture ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-demo-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-demo-'));
 const DEMO = path.join(TMP, 'demo-home');            // the tree IS the fake home
 const w = (rel, text) => {
   const abs = path.join(DEMO, ...rel.split('/'));

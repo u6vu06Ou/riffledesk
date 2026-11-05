@@ -174,22 +174,26 @@ async function main() {
   const selRow = await page.evaluate(() => document.querySelector('#projPiles .pile-row.sel') !== null);
   ok(selRow, 'the pile row is the selected row in the left column');
 
-  // ---------- 5. folder type choices never hide AI handoff files.
+  // ---------- 5. a pile has its OWN type filter, starting at All, and never touches the folder's
+  const folderChips = await page.evaluate(() => window.__dbg.chipsOn());
+  ok(/類型: 全部|Type: All/.test(await page.locator('#chips summary').innerText()), 'the pile type button reads a type label, not a phrase');
   await page.evaluate(() => window.__dbg.selectChip('image'));
   await sleep(500);
-  ok((await cardNames(page)).size === 3, 'image-only folder filter keeps all three delivered notes');
-  ok(/整疊都顯示|All files in this pile/.test(await page.locator('#chips summary').innerText()), 'type control explains that piles show everything');
-  ok(await page.locator('#projPiles .pile-row.sel .cnt').innerText() === '3', 'pile count stays independent of folder filters');
-  await page.locator('#pathBar .pile-back').click();
-  await sleep(500);
-  ok((await names(page)).length === 0, 'leaving a pile restores the image-only folder filter');
-  ok(!/整疊都顯示|All files in this pile/.test(await page.locator('#chips summary').innerText()), 'folder type label returns after leaving a pile');
-  await page.evaluate(id => window.__dbg.pileOpen(id), rows[0]);
-  await page.waitForFunction(() => window.__dbg.pileState());
-  ok((await cardNames(page)).size === 3, 'entering a pile with an existing image filter still shows every delivered note');
+  ok((await cardNames(page)).size === 0, 'an image-only choice inside the pile hides the delivered notes');
+  ok(JSON.stringify(await page.evaluate(() => window.__dbg.chipsOn())) === JSON.stringify(folderChips), 'the folder selection is untouched inside the pile');
   await page.evaluate(() => window.__dbg.selectChip('md'));
   await sleep(500);
   ok((await cardNames(page)).size === 3, 'a markdown chip brings the three back');
+  ok(await page.locator('#projPiles .pile-row.sel .cnt').innerText() === '3', 'pile count follows the pile selection');
+  // leaving restores the folder choice and the folder's own cards
+  await page.locator('#pathBar .pile-back').click();
+  await sleep(600);
+  ok(JSON.stringify(await page.evaluate(() => window.__dbg.chipsOn())) === JSON.stringify(folderChips), 'leaving a pile restores the folder selection');
+  ok((await names(page)).includes('other-a.md'), 'the folder shows its own files again');
+  await page.evaluate(id => window.__dbg.pileOpen(id), rows[0]);
+  await page.waitForFunction(() => window.__dbg.pileState());
+  await sleep(500);
+  ok((await cardNames(page)).size === 3, 're-entering a pile always starts at All');
 
   // ---------- 6. reading one of them works from the pile
   await page.evaluate(() => window.__dbg.openFileByName('two.md'));

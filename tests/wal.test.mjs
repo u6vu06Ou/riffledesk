@@ -24,7 +24,7 @@ const { createCountCache } = require('../countcache.js');
 const MB = 1048576;
 const tmpDirs = [];
 function tmpDb() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-wal-'));
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-wal-'));
   tmpDirs.push(dir);
   return path.join(dir, 'wal.db');
 }

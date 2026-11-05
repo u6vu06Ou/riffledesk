@@ -92,7 +92,7 @@ test('secrets.js: looksBinary sniff', () => {
 });
 
 // ---------- server integration ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-undo-test-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-undo-test-'));
 const FIX = path.join(TMP, 'fixture');
 fs.mkdirSync(FIX, { recursive: true });
 fs.writeFileSync(path.join(FIX, 'ren-a.txt'), 'rename me\n');

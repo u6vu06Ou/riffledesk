@@ -81,6 +81,12 @@ export class Reader {
     this.btnWrap = document.getElementById('btnWrap');
     this.guardEl = document.getElementById('editGuard');
     this.body = document.getElementById('readerBody');
+    // 面板寬度／視窗變動→表格重排（收合時寬 0，fitTables 自己會延後到顯示）。
+    // 自己改 class 也會改高度→事件回捲：fit 進行中與落地後一小段都先略過。
+    this.fitRO = new ResizeObserver(() => {
+      if (!this.fitBusy && Date.now() - (this.fitAt || 0) > 400) this.refitTables();
+    });
+    this.fitRO.observe(this.body);
     this.rawText = null;            // 這個檔的原始文字（編輯器進去時用；JSON 是原始檔不是 pretty 版）
     this.toast = () => {};
     // 右欄網頁預覽的「側欄模式」鈕用的回呼（main.js 接 tabsMode.enterSidePanel）；
@@ -282,6 +288,7 @@ export class Reader {
     }
     this.styleCallouts();
     this.tagify();
+    this.fitTables();
   }
 
   // force=true：無條件離開；否則有未存就跳頁內提示
@@ -389,7 +396,10 @@ export class Reader {
     }
     if (!on) this.hide();
   }
-  show() { this.el.classList.add('show'); }
+  show() {
+    this.el.classList.add('show');
+    if (this.fitPending) this.fitTables();   // 顯示後寬度馬上可用，不必等 debounce
+  }
   hide() {
     this.el.classList.remove('show'); this.clearLineMark();
     ++this.openGen; // A pending HTML load must not restart after the reader closes.
@@ -924,6 +934,7 @@ export class Reader {
             }
             this.styleCallouts(el);
             this.tagify(el);
+            this.fitTables(el);
             this.wireEmbeds(file, el);
           } else { el.innerHTML = '<pre></pre>'; el.querySelector('pre').textContent = text; }
         } else if (file.kind === 'json') {
@@ -988,6 +999,83 @@ export class Reader {
       // pretty JSON 是重排過的新字串，位元組數≠file.size，就留空讓 codetheme 自量
       bytes: (file && file.kind !== 'json' && typeof file.size === 'number') ? file.size : undefined
     });
+  }
+
+  // ---- 表格排版（渲染後跑一次，不看每幀） ----
+  // 雷達表那種「幾個短欄＋一個長文欄」：短欄全欄都不超過 ~16（CJK 算 2）就 nowrap 收窄，
+  // 只要有一個長格就整欄給最小可讀寬度。
+  // 只有正文最外層的表包框（框會用負邊界跳出 760px 正文欄）；引言、清單、儲存格裡的巢狀表
+  // 不包框、不跳欄，但一樣做欄位分類。有 colspan/rowspan 的表跳過分類（欄序會對不上）。
+  fitTables(into) {
+    const root = into || this.body;
+    if (!root.clientWidth) { this.fitPending = true; return; }   // 面板收合／隱藏時寬 0，不量
+    this.fitPending = false;
+    this.fitBusy = true;
+    try { this.fitTablesOnce(root); } finally { this.fitBusy = false; this.fitAt = Date.now(); }
+  }
+
+  fitTablesOnce(root) {
+    const tables = [...root.querySelectorAll('table')];
+    if (!tables.length) return;
+    // 1) 批次量文字長度與高度（純讀）
+    const plans = tables.map(table => {
+      const parent = table.parentElement;
+      if (!parent) return null;
+      const top = parent === root
+        || (parent.classList.contains('md-table-wrap') && parent.parentElement === root);
+      const rows = [...table.rows];
+      const cols = Math.max(0, ...rows.map(r => r.cells.length));
+      const cls = new Array(cols).fill('');
+      const spans = rows.some(r => [...r.cells].some(c => c.colSpan > 1 || c.rowSpan > 1));
+      if (!spans) {
+        for (let c = 0; c < cols; c++) {
+          let longest = 0, anyLong = false;
+          for (const r of rows) {
+            const cell = r.cells[c];
+            if (!cell) continue;
+            const len = cellTextLen(cell);
+            if (len > longest) longest = len;
+            if (len > 16) anyLong = true;
+          }
+          cls[c] = anyLong ? 'md-cell-long' : 'md-cell-short';
+        }
+      }
+      return { table, top, wrap: top && parent.classList.contains('md-table-wrap') ? parent : null, rows, cls, spans };
+    }).filter(Boolean);
+    // 2) 批次寫入：包框（僅最外層）＋換上欄位類別
+    for (const p of plans) {
+      if (p.top && !p.wrap) {
+        p.wrap = document.createElement('div');
+        p.wrap.className = 'md-table-wrap';
+        p.wrap.setAttribute('role', 'group');
+        p.table.before(p.wrap);
+        p.wrap.appendChild(p.table);
+      }
+      for (const r of p.rows) for (const c of r.cells) c.classList.remove('md-cell-short', 'md-cell-long');
+      if (p.spans) continue;
+      for (let c = 0; c < p.cls.length; c++) {
+        for (const r of p.rows) { const cell = r.cells[c]; if (cell) cell.classList.add(p.cls[c]); }
+      }
+    }
+    // 3) 批次量高度：門檻與 CSS 共用 --md-tall-max；很高的表由框自己上下捲，表頭 sticky 才有意義
+    const tallMax = Math.max(320, root.clientHeight * 0.7);
+    root.style.setProperty('--md-tall-max', tallMax + 'px');
+    // 先全部寫 tall 再一次量橫向溢出（垂直捲軸會吃掉 clientWidth，順序反了會誤判）
+    plans.forEach((p, k) => { if (p.wrap) p.wrap.classList.toggle('md-table-tall', p.table.offsetHeight > tallMax); });
+    const needsKeys = plans.map(p => !!p.wrap && (p.wrap.classList.contains('md-table-tall')
+      || p.wrap.scrollWidth > p.wrap.clientWidth + 1));
+    // 4) 只有真的會捲（上下或左右）的框才給 tabindex，鍵盤才捲得到
+    plans.forEach((p, k) => {
+      if (!p.wrap) return;
+      if (needsKeys[k]) p.wrap.setAttribute('tabindex', '0');
+      else p.wrap.removeAttribute('tabindex');
+    });
+  }
+
+  // 尺寸變了（視窗或欄寬）：重排；隱藏中就等顯示出來再說
+  refitTables() {
+    clearTimeout(this.fitTimer);
+    this.fitTimer = setTimeout(() => this.fitTables(), 150);
   }
 
   // ---- Obsidian 風格（callout / #tag / 嵌入圖 / wikilink 點擊） ----
@@ -1170,6 +1258,23 @@ function rowsToTable(rows) {
 }
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+}
+// 表格欄寬判定用的「視覺長度」：CJK／全形字算 2，其餘算 1（量的是文字，不是 HTML）
+const WIDE_RE = /[ᄀ-ᅟ⺀-꓏ꥠ-꥿가-힣豈-﫿︐-︙︰-﹯＀-｠￠-￦]|[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{20000}-\u{3FFFD}]/u;
+// 巢狀表的文字不算進外層儲存格長度（否則外層永遠被判成「長欄」）
+function cellTextLen(cell) {
+  let raw = '';
+  const walk = node => {
+    for (const n of node.childNodes) {
+      if (n.nodeType === 3) raw += n.nodeValue;
+      else if (n.nodeName !== 'TABLE') walk(n);
+    }
+  };
+  walk(cell);
+  const text = raw.trim();
+  let n = 0;
+  for (const ch of text) n += WIDE_RE.test(ch) ? 2 : 1;
+  return n;
 }
 
 // 內文搜尋結果打開時：把搜尋字標黃（不分大小寫），捲到第一個；行號槽的數字不標

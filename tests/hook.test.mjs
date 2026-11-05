@@ -16,8 +16,8 @@ const require = createRequire(import.meta.url);
 const hooklib = require(path.join(ROOT, 'bin', 'hook.js'));
 let TMP;
 
-before(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-hook-')); });
-after(() => { fs.rmSync(TMP, { recursive: true, force: true }); });
+before(() => { TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-hook-')); });
+after(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {} });
 
 let seq = 0;
 function fakeHome() {

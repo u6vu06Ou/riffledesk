@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = path.join(ROOT, 'bin', 'riffledesk.js');
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-show-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-show-'));
 const A = path.join(TMP, 'a.md');
 const B = path.join(TMP, 'b.md');
 fs.writeFileSync(A, '# a\n');

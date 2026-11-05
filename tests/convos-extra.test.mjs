@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 const convos = require(path.join(ROOT, 'convos.js'));
 
 // ---------- sandbox ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-convos-extra-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-convos-extra-'));
 const WRITTEN = path.join(TMP, 'written');
 fs.mkdirSync(WRITTEN, { recursive: true });
 const F = n => path.join(WRITTEN, n);

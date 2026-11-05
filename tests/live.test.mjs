@@ -12,7 +12,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5187;
 
 // ---------- temp fixture: a watched folder + a fake Claude transcript root ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-live-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-live-'));
 const FIX = path.join(TMP, 'fixture');
 const CLAUDE = path.join(TMP, 'claude-proj');        // kind: claude → <dir>/<slug>/*.jsonl
 fs.mkdirSync(FIX, { recursive: true });

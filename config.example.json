@@ -4,6 +4,7 @@
   "indexSkipDirs": [],
   "indexMaxMB": 2048,
   "indexContent": true,
+  "indexRecrawlHours": 24,
   "secretScan": true,
   "secretScanSkipDirs": []
 }

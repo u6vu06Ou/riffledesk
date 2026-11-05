@@ -25,7 +25,7 @@ const require2 = createRequire(import.meta.url);
 const srv = require2(path.join(ROOT, 'server.js')); // exports (no listener until start())
 
 // ---------- temp fixture ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-raw-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-raw-'));
 const FIX = path.join(TMP, 'fixture');
 fs.mkdirSync(path.join(FIX, 'web'), { recursive: true });
 fs.mkdirSync(path.join(FIX, 'lib'), { recursive: true });

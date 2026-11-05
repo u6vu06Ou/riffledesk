@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // keep loadConfig away from the repo's real config before requiring server.js
 process.env.FLODER_CONFIG = path.join(
-  fs.mkdtempSync(path.join(os.tmpdir(), 'rd-drives-cfg-')), 'config.json');
+  fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'rd-drives-cfg-')), 'config.json');
 const require = createRequire(import.meta.url);
 const { collectDrives } = require(path.join(ROOT, 'server.js'));
 

@@ -15,7 +15,7 @@ const PORT = 5191;
 const BASE = `http://127.0.0.1:${PORT}`;
 const ORIGIN = BASE;
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-revise-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-revise-'));
 const FIX = path.join(TMP, 'fixture');
 // a nonexistent drive letter is never in the allowed scopes (TEMP lives under the home dir)
 const IS_WIN = process.platform === 'win32';

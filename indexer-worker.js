@@ -340,11 +340,14 @@ function underPrefix(col, n) {
 function bumpGen() {
   try { metaSet('gen', String(Math.max(1, Math.floor(Number(metaGet('gen')) || 0) + 1))); } catch (_) {}
 }
-function aggAdd(dirid, ext, delta) {
+function aggAdd(dirid, ext, delta, force) {
   // ext === '' (extensionless files) IS counted — rebuildDirAgg groups them the
   // same way; only a true null is skipped. Failures log instead of vanishing so
   // rollup drift is at least visible in the log (the per-crawl rebuild self-heals).
-  if (!diraggOn || aggDeltaOff || dirid == null || ext == null || !delta) return;
+  // force: the search-side fresh pass repairs rows mid-crawl and MUST keep the
+  // rollup exact (an end-of-crawl rebuild only covers roots that crawl walked);
+  // safe because rebuildDirAgg is a full recompute that absorbs prior deltas.
+  if (!diraggOn || (aggDeltaOff && !force) || dirid == null || ext == null || !delta) return;
   try {
     prep('INSERT INTO diragg (dirid, ext, n) VALUES (?, ?, ?) ON CONFLICT(dirid, ext) DO UPDATE SET n = n + excluded.n')
       .run(dirid, ext, delta);
@@ -391,21 +394,34 @@ function rebuildDirAgg(rootNorm) {
 // reindexed mid-crawl — watch re-syncs now DEFER until the crawl queue drains, so
 // concurrent paced loops are the rare exception, not the norm). The accumulator is
 // still shared so a brief overlap cannot double the duty budget either.
-// busy is clamped at 200 ms: after a long idle stretch the first call would
-// otherwise read the whole idle span as "busy" and sleep for the rest cap.
-// The rest cap must satisfy rest >= 7.5*busy or the duty bound breaks — 4000 ms
-// tolerates a ~500 ms slice without distorting normal pacing.
-const PACE_BUSY_MS = 8;       // rest = min(busy * 7.5, 4000) → worker duty ≈ 12%, process ≤ 25%
+// busy is clamped at 250 ms: after a long idle stretch the first call would
+// otherwise read the whole idle span as "busy" and sleep from a phantom slice.
+// Slices below the old 8 ms trigger used to rest NEVER — a stat/readdir storm
+// of 32 sub-8 ms bursts then ran unthrottled (measured process CPU 49–78%
+// mid-crawl, one 5 s window at 108%). The accumulator now keeps a REST DEBT:
+// every busy slice (however small) owes busy * 7.5 of sleep, and the debt is
+// taken once it clears PACE_DEBT_MIN_REST — timer churn is capped, but no work
+// pattern can slip through untracked, so the 1-in-8.5 duty bound holds for ANY
+// slice shape. The 4 s rest cap is a defensive backstop; in practice a rest is
+// 60 ms (accumulated small slices) to ~1.9 s (one capped 250 ms slice).
+const PACE_BUSY_MS = 8;          // a slice this big rests immediately
+const PACE_DEBT_MIN_REST = 60;   // accumulated small slices rest once they owe this much
+const PACE_SLICE_CAP_MS = 250;   // clamp one slice's reading (idle spans are not work)
+const PACE_REST_CAP_MS = 4000;   // single rest ceiling
 const PACE_NULL = async () => {};
 let paceShared = null;
 function makePacer() {
   if (process.env.RIFFLEDESK_CRAWL_PACE === '0') return PACE_NULL;
   if (paceShared) return paceShared;
   let slice = performance.now();
+  let debt = 0; // rest owed by busy slices since the last rest (ms)
   paceShared = async () => {
-    const busy = Math.min(performance.now() - slice, 200);
-    if (busy < PACE_BUSY_MS) return;
-    const rest = Math.min(busy * 7.5, 4000);
+    const busy = Math.min(performance.now() - slice, PACE_SLICE_CAP_MS);
+    slice = performance.now();
+    debt = Math.min(debt + busy * 7.5, PACE_REST_CAP_MS);
+    if (busy < PACE_BUSY_MS && debt < PACE_DEBT_MIN_REST) return; // skip timer churn for light stretches
+    const rest = debt;
+    debt = 0;
     await new Promise(r => setTimeout(r, rest));
     slice = performance.now();
   };
@@ -518,10 +534,16 @@ function deleteFtsRows(fileid) {
 // rec.secret mirrors that discipline: undefined → leave files.secret alone
 // (a NULL keeps meaning "never scanned"), 0/1 → set it.
 // Returns the row's files.id.
-function upsertRow(rec) {
-  // diragg delta bookkeeping: know the previous (dirid, ext) before overwriting
+// allowDelta: the fresh-scan repair pass passes true so its row fixes keep
+// diragg exact even while a crawl suppresses bulk deltas (see aggAdd force).
+function upsertRow(rec, allowDelta) {
+  // diragg delta bookkeeping: know the previous (dirid, ext) before overwriting.
+  // A crawl suppresses the deltas (aggDeltaOff — rebuildDirAgg re-derives the
+  // whole root at the end), so the probe is skipped there too: it cost one
+  // extra index probe per written row mid-crawl for nothing.
+  const doDelta = diraggOn && (allowDelta || !aggDeltaOff);
   let prev = null;
-  if (diraggOn) try { prev = prep('SELECT ext FROM files WHERE dirid = ? AND name = ?').get(rec.dirid, rec.name) || null; } catch (_) {}
+  if (doDelta) try { prev = prep('SELECT ext FROM files WHERE dirid = ? AND name = ?').get(rec.dirid, rec.name) || null; } catch (_) {}
   const row = prep(`INSERT INTO files (dirid, name, ext, kind, size, mtime, has_content, secret)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(dirid, name) DO UPDATE SET
@@ -536,9 +558,9 @@ function upsertRow(rec) {
       rec.content === undefined ? 1 : 0,
       rec.secret === undefined ? 1 : 0);
   if (rec.content !== undefined) setRowContent(row.id, rec.content);
-  if (diraggOn) {
-    if (!prev) aggAdd(rec.dirid, rec.ext, 1);
-    else if (prev.ext !== rec.ext) { aggAdd(rec.dirid, rec.ext, 1); aggAdd(rec.dirid, prev.ext, -1); }
+  if (doDelta) {
+    if (!prev) aggAdd(rec.dirid, rec.ext, 1, allowDelta);
+    else if (prev.ext !== rec.ext) { aggAdd(rec.dirid, rec.ext, 1, allowDelta); aggAdd(rec.dirid, prev.ext, -1, allowDelta); }
   }
   return row.id;
 }
@@ -663,30 +685,101 @@ const postCrawlResync = new Set(); // rootNorms whose watcher died mid-crawl (re
 let desiredWatchRoots = new Set(); // roots from the last 'watch' message (for unwatch/re-arm)
 const watchOk = process.env.RIFFLEDESK_WATCH !== '0' && (process.platform === 'win32' || process.platform === 'darwin');
 
+// Roots whose watcher cannot be armed at all (fs.watch throws: unsupported
+// filesystem, watch-handle exhaustion, or a root that does not exist yet) have
+// NO live feed — waiting for the daily crawl would leave them stale for up to
+// 24 h, so they get a slower periodic rescan of their own (paced, and it first
+// retries arming the watcher: the unplugged drive may be back). Between rescans
+// the search-side fresh scan still keeps answers current under those roots.
+const UNWATCHABLE_RESCAN_MS = Math.max(1000, Number(process.env.RIFFLEDESK_UNWATCH_RESCAN_MS) || 30 * 60 * 1000);
+const unwatchableRoots = new Set(); // rootNorms with no armed watcher
+let unwatchTimer = null;
+let unwatchRoundRunning = false; // rescan rounds never overlap each other
+// test-only hook (NODE_ENV=test): simulate fs.watch arm failure for matching roots
+const watchFailFor = process.env.NODE_ENV === 'test' ? (process.env.RIFFLEDESK_WATCH_FAIL_FOR || '').split('|').filter(Boolean) : [];
+
+function armUnwatchableRescan() {
+  if (unwatchTimer || !unwatchableRoots.size || !db) return;
+  unwatchTimer = setInterval(() => {
+    (async () => {
+      if (unwatchRoundRunning) return; // a round still working: never overlap
+      if (crawling) return; // the queued crawl re-walks these roots anyway
+      unwatchRoundRunning = true;
+      try {
+        const list = [...unwatchableRoots];
+        for (const rn of list) {
+          if (!desiredWatchRoots.has(rn)) { unwatchableRoots.delete(rn); continue; }
+          if (watchers.has(rn)) { unwatchableRoots.delete(rn); continue; }
+          // retry the watcher first: a root that (re)appeared can go back to
+          // live updates. MUST pass the full desired set: watchRoots() closes
+          // every watcher not in its argument — a single-root call would tear
+          // down all healthy roots.
+          watchRoots([...desiredWatchRoots]);
+          // crawl either way: when the arm failed it is the root's shorter recrawl;
+          // when it just succeeded, this covers the changes the watcher never saw
+          // (a freshly armed fs.watch does not replay the blind period)
+          try { await crawlRootInternal(rn); }
+          catch (e) { wlog(`index: unwatchable-root rescan of ${rn} failed: ${e.message}`); }
+        }
+        if (!unwatchableRoots.size && unwatchTimer) { clearInterval(unwatchTimer); unwatchTimer = null; }
+      } catch (e) {
+        wlog(`index: unwatchable-root rescan round failed: ${e.message}`);
+      } finally {
+        unwatchRoundRunning = false;
+      }
+    })().catch(e => { unwatchRoundRunning = false; try { wlog(`index: unwatchable-root rescan failed: ${e.message}`); } catch (_) {} });
+  }, UNWATCHABLE_RESCAN_MS);
+  if (unwatchTimer.unref) unwatchTimer.unref();
+}
+
 function watchRoots(rs) {
-  if (!watchOk || !db) return;
+  if (!db) return;
   const want = new Set(rs.map(r => norm(path.resolve(r))));
   desiredWatchRoots = want;
+  if (!watchOk) {
+    // no recursive watching on this platform (linux et al.): every root is
+    // effectively unwatchable — the periodic rescan loop is their only feed
+    // between daily crawls
+    for (const rn of want) if (!watchers.has(rn)) unwatchableRoots.add(rn);
+    armUnwatchableRescan();
+    return;
+  }
   // roots removed from the config stop watching instead of leaking the handle
   for (const [rn, entry] of watchers) {
     if (want.has(rn)) continue;
     try { entry.watcher.close(); } catch (_) {}
     if (entry.timer) clearTimeout(entry.timer);
     watchers.delete(rn);
+    unwatchableRoots.delete(rn);
     wlog(`index: unwatched ${rn} (no longer a root)`);
   }
   for (const r of rs) {
     const rn = norm(path.resolve(r));
-    if (watchers.has(rn)) continue;
+    if (watchers.has(rn)) { unwatchableRoots.delete(rn); continue; }
     let w;
-    try { w = fs.watch(r, { recursive: true }, (type, rel) => noteWatch(rn, rel)); }
-    catch (e) { wlog(`index: watch unavailable for ${r}: ${e.code || e.message}`); continue; }
+    try {
+      // test hook: simulate an fs.watch that cannot be armed at all for roots
+      // matching the list (portable equivalent of network-drive / unsupported-FS
+      // failures; production never sets this)
+      if (watchFailFor.some(s => r.includes(s))) { const e = new Error('watch arm refused by RIFFLEDESK_WATCH_FAIL_FOR'); e.code = 'ERR_TEST_WATCH'; throw e; }
+      w = fs.watch(r, { recursive: true }, (type, rel) => noteWatch(rn, rel));
+    }
+    catch (e) {
+      wlog(`index: watch unavailable for ${r}: ${e.code || e.message} — rescanning that root every ${Math.round(UNWATCHABLE_RESCAN_MS / 60000) || 1} min instead of waiting for the daily crawl`);
+      unwatchableRoots.add(rn);
+      continue;
+    }
+    unwatchableRoots.delete(rn);
     const entry = { watcher: w, pending: new Set(), timer: null };
     watchers.set(rn, entry);
     w.on('error', () => {
       try { w.close(); } catch (_) {}
       watchers.delete(rn);
-      wlog(`index: watch on ${rn} errored — re-arming in 30 s (hourly crawl covers the gap)`);
+      // a watcher that died at runtime is the same risk as one that never
+      // armed: the rescan loop covers the gap while the 30 s re-arm retries
+      unwatchableRoots.add(rn);
+      armUnwatchableRescan();
+      wlog(`index: watch on ${rn} errored — re-arming in 30 s (periodic rescan covers the gap)`);
       const t = setTimeout(() => {
         if (desiredWatchRoots.has(rn) && !watchers.has(rn)) {
           watchRoots([...desiredWatchRoots]);
@@ -701,18 +794,35 @@ function watchRoots(rs) {
     });
     wlog(`index: watching ${r}`);
   }
+  armUnwatchableRescan();
 }
 
 function noteWatch(rootNorm, rel) {
   const w = watchers.get(rootNorm);
   if (!w) return;
   if (!rel) { w.pending.add(rootNorm); scheduleWatchFlush(rootNorm); return; } // null filename (event overflow): resync the whole root
-  // watch events land per-file AND per-dir; batch by containing directory
-  const segs = norm(String(rel)).split(SEP).filter(Boolean);
+  // watch events land per-file AND per-dir; batch by containing directory.
+  // fs.watch fileName is RELATIVE to the watched root, but norm() would
+  // resolve it against the process cwd — so it is split by hand and the
+  // segments are joined onto rootNorm below. Some platform/Node combinations
+  // report an absolute fileName instead; use that as-is then.
+  const raw = String(rel);
+  const segs = (IS_WIN ? raw.split(/[/\\]/) : raw.split('/')).filter(Boolean)
+    .filter(s => s !== '.') // keep real names; '.' only appears in odd inputs
+    .map(s => (IS_WIN ? s.toLowerCase() : s));
   if (!segs.length) return;
   if (segs.some(s => s.startsWith('.') || skipDirNames.has(s.toLowerCase()))) return;
   const dirSegs = segs.slice(0, -1);
-  const dirNorm = dirSegs.length ? rootNorm + SEP + dirSegs.join(SEP) : rootNorm;
+  let dirNorm;
+  if (path.isAbsolute(raw)) {
+    // some platform/Node combinations report an absolute fileName: it may name
+    // the changed entry (file OR dir) — only the containing directory matters
+    let isDir = false;
+    try { isDir = fs.statSync(raw).isDirectory(); } catch (_) { /* renamed away */ }
+    dirNorm = norm(isDir ? raw : path.dirname(raw));
+  } else {
+    dirNorm = dirSegs.length ? rootNorm + SEP + dirSegs.join(SEP) : rootNorm;
+  }
   w.pending.add(dirNorm);
   scheduleWatchFlush(rootNorm);
 }
@@ -764,7 +874,7 @@ async function reindexTree(dirNorm, rootNorm) {
         // already indexed: the crawl owns it; a stale entry here would double-sync
         if (dNorm !== dirNorm) continue;
       }
-      const { metas, entries } = await scanDirFiles(dir);
+      const { metas, entries } = await scanDirFiles(dir, pace);
       if (entries === null) continue;
       await syncDirRows(dNorm, dir, metas, writeQueue, flush, pace);
       await pace();
@@ -798,13 +908,17 @@ const tick = (() => { let ops = 0; return async () => { if (++ops % 64 === 0) aw
 
 // entries === null signals a READDIR FAILURE (not an empty dir) — callers must
 // not delete anything for such a dir (its rows may still be valid).
-async function scanDirFiles(dir) {
+// `pace`: stat storms are sub-8 ms bursts the old per-slice trigger ignored —
+// the caller's shared pacer now covers this loop too (every 32 entries).
+async function scanDirFiles(dir, pace) {
   const metas = [];
   let entries;
   try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { return { metas, entries: null }; }
+  let ops = 0;
   for (const e of entries) {
     if (!e.isFile() && !e.isSymbolicLink()) continue;
-    await tick();
+    if (pace && ++ops % 32 === 0) await pace();
+    else await tick();
     const full = path.join(dir, e.name);
     let target = full, st;
     if (e.isSymbolicLink()) {
@@ -939,7 +1053,7 @@ async function crawlRootInternal(rootAbs) {
     let first = true;
     while (stack.length) {
       const { dir, depth } = stack.pop();
-      const { metas, entries } = await scanDirFiles(dir);
+      const { metas, entries } = await scanDirFiles(dir, pace);
       if (entries === null) {
         if (first) return 0; // unreadable ROOT: know nothing, abort without writing
         seenDirs.add(norm(dir)); // failed dir keeps its rows (final sweep spares it)
@@ -1177,6 +1291,172 @@ function searchExtClause(filter) {
   return { sql, args };
 }
 
+// ---------- freshness scan (search side) ----------
+// While a crawl runs, watch-triggered re-syncs stay pending (scheduleWatchFlush
+// defers, and crawler vs reindex may not overlap), so a file written seconds
+// ago is not in any row yet — a search right under that dir answered stale
+// (indexed:true, 0 hits). The fresh pass closes that window WITHOUT an
+// unbounded live scan: walk the searched subtree under hard budgets, keep only
+// files the index provably does not know about yet (mtime past the last crawl
+// boundary, or a dir with a pending watcher flush, then a row compare), read
+// those heads with the same rules as the crawler (content kinds, 5 MB gate,
+// 64 KB head), verify the match, merge (deduped) — and fix the index rows on
+// the way so the NEXT search finds them straight from SQLite. Shares the
+// crawl's pace accumulator, so even scan + crawl together stay in one duty
+// cycle.
+const FRESH_MAX_FILES = 2000;   // tree entries walked
+const FRESH_BUDGET_MS = 300;    // wall clock for one fresh pass
+const FRESH_MAX_VERIFY = 200;   // head reads
+
+// is absNorm itself a dir the crawler never indexes (dot dir / indexSkipDirs)?
+// Those never get a dirs row, so "no row" must not by itself mean "live-walk
+// it" — otherwise a search inside node_modules would re-walk on every query.
+function excludedDir(absNorm) {
+  const base = path.basename(absNorm);
+  return base.startsWith('.') || skipDirNames.has(base.toLowerCase());
+}
+
+// is anything under absNorm known-dirty right now? Returns the dir row state
+// too (null = the searched dir has no dirs row), so the caller never has to
+// look it up a second time and an interleaved crawler insert cannot flip it.
+function freshScanNeeded(absNorm, dirid) {
+  // the searched dir itself is not in the index: nothing under it can be
+  // answered from rows — a brand-new folder, a folder a running crawl has not
+  // reached yet, or one whose row the crawl just swept. Live-walk it then.
+  const unknownDir = dirid == null && !excludedDir(absNorm);
+  if (unknownDir) return true; // a skipped dir (node_modules, .git…) always has no row
+  if (crawling) return true; // watch flushes are deferred until the queue drains
+  for (const rn of unwatchableRoots) { // no live feed on this root at all
+    if (rn === SEP ? absNorm.startsWith(SEP) : (absNorm === rn || absNorm.startsWith(rn + SEP))) return true;
+  }
+  for (const [rn, w] of watchers) {
+    if (!w.pending.size) continue;
+    if (!(rn === SEP ? absNorm.startsWith(SEP) : (absNorm === rn || absNorm.startsWith(rn + SEP)))) continue;
+    for (const dn of w.pending) {
+      if (dn === absNorm || dn.startsWith(absNorm + SEP) || absNorm.startsWith(dn + SEP)) return true;
+    }
+  }
+  return false;
+}
+
+// pending watcher dirs relevant to the subtree: exact-descendant dirs (hit
+// per-file) plus ancestors (those dirty the whole subtree — the per-row
+// DB compare below is then the only gate; equal-cost rows are still skipped).
+function pendingFor(absNorm) {
+  const dirs = new Set();
+  let subtreeDirty = false;
+  for (const [rn, w] of watchers) {
+    if (!w.pending.size) continue;
+    if (!(rn === SEP ? absNorm.startsWith(SEP) : (absNorm === rn || absNorm.startsWith(rn + SEP)))) continue;
+    for (const dn of w.pending) {
+      if (dn === absNorm || dn.startsWith(absNorm + SEP)) dirs.add(dn);
+      else if (absNorm.startsWith(dn + SEP)) subtreeDirty = true;
+    }
+  }
+  return { dirs, subtreeDirty };
+}
+
+// Bounded live walk of one search subtree; returns fresh result rows plus the
+// index fixes they imply. `skip` = norm'd abs paths among the indexed
+// candidates (their rows the verify pass already re-stats and repairs).
+async function freshScanPass(rootAbs, absNorm, q, qLow, filter, skip, limitLeft, dirid) {
+  const resolved = path.resolve(rootAbs);
+  const deadline = Date.now() + FRESH_BUDGET_MS;
+  const cutoff = lastCrawlAt || 0; // files older than the last crawl are its responsibility
+  const { dirs: pendingDirs, subtreeDirty: pendingDirty } = pendingFor(absNorm);
+  // the searched dir has no row: the index knows nothing under it, so every
+  // file counts as potentially-new regardless of mtime (a NEW folder can hold
+  // files older than the last crawl — e.g. created by a copy/move)
+  // `dirid` is resolved once by the caller (a crawler insert mid-search must
+  // not flip unknown → known and re-enable the mtime cutoff for the rest of it)
+  const unknownDir = dirid == null && !excludedDir(absNorm);
+  const subtreeDirty = pendingDirty || unknownDir;
+  const out = [];
+  const upserts = [];
+  const stack = [{ dir: resolved, depth: 0 }];
+  const seenReal = new Set();
+  try { seenReal.add(realNorm(resolved)); } catch (_) {}
+  const pace = makePacer(); // same shared accumulator the crawl uses
+  let visited = 0, verified = 0, truncated = false;
+  while (stack.length) {
+    if (Date.now() > deadline) { truncated = true; break; }
+    const { dir, depth } = stack.pop();
+    let entries;
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { continue; }
+    const dirN = norm(dir);
+    const dirPending = subtreeDirty || pendingDirs.has(dirN);
+    for (const e of entries) {
+      if (++visited > FRESH_MAX_FILES) { truncated = true; break; }
+      if ((visited & 31) === 0) await pace();
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name.startsWith('.') || skipDirNames.has(e.name.toLowerCase()) || depth >= MAX_DEPTH) continue;
+        let key; try { key = realNorm(full); } catch (_) { continue; }
+        if (seenReal.has(key)) continue;
+        seenReal.add(key);
+        stack.push({ dir: full, depth: depth + 1 });
+        continue;
+      }
+      if (!e.isFile() && !e.isSymbolicLink()) continue;
+      let target = full, st;
+      if (e.isSymbolicLink()) {
+        try { target = await fs.promises.realpath(full); } catch (_) { continue; }
+        if (!isAllowedHere(target)) continue;
+        try { st = await fs.promises.stat(target); } catch (_) { continue; }
+      } else {
+        try { st = await fs.promises.stat(full); } catch (_) { continue; }
+      }
+      if (!st.isFile()) continue;
+      const ext = path.extname(e.name).toLowerCase();
+      const kind = KIND[ext] || null;
+      if (!kind || !TEXTLIKE.has(kind)) continue;          // same gates as the live scan
+      if (filter && filter.mode === 'set' && !filter.set.has(ext)) continue;
+      if (st.size > MAX_TEXT_BYTES) continue;
+      // freshness gate: touched after the last crawl boundary, or in a dir the
+      // watcher flagged — the index row may not have caught up yet
+      if (!(dirPending || st.mtimeMs > cutoff)) continue;
+      const dirid = dirIdLookup(dirN);
+      if (dirid != null) {
+        const row = prep('SELECT size, mtime FROM files WHERE dirid = ? AND name = ?').get(dirid, e.name);
+        if (row && row.size === st.size && Math.abs(row.mtime - st.mtimeMs) < 1e-6) continue; // row is current
+      }
+      const absKey = norm(full);
+      if (skip.has(absKey)) continue; // already among the indexed candidates (verify re-stats it)
+      skip.add(absKey);
+      if (++verified > FRESH_MAX_VERIFY) { truncated = true; break; }
+      if (Date.now() > deadline) { truncated = true; break; }
+      const content = await readContent(target);
+      const recDirid = dirid != null ? dirid : ensureDir(dirN, dir);
+      upserts.push({ dirid: recDirid, name: e.name, ext, kind, size: st.size, mtime: st.mtimeMs,
+        content: content === null ? '' : content, secret: secretFor(dirN, content) });
+      const nameHit = e.name.toLowerCase().includes(qLow) ? 1 : 0;
+      let occ = 0, snippet = '';
+      if (content) {
+        const low = content.toLowerCase();
+        occ = countOccurrences(low, qLow);
+        if (occ > 0) snippet = makeSnippet(content, low.indexOf(qLow), q.length);
+      }
+      const hits = occ + nameHit;
+      if (hits === 0) continue;
+      out.push({ name: e.name, path: full, size: st.size, mtime: st.mtimeMs,
+        ext, kind, hits, snippet, rel: path.relative(resolved, full) });
+      if (out.length >= limitLeft) break; // plain result capping, not truncation
+    }
+    if (truncated || out.length >= limitLeft) break;
+  }
+  // fix the rows the pass bumped into (the crawl/watch flush would do this
+  // minutes later otherwise); one transaction for the whole pass
+  if (upserts.length) {
+    try {
+      db.exec('BEGIN');
+      for (const r of upserts) upsertRow(r, true); // allowDelta: keep diragg exact even mid-crawl
+      db.exec('COMMIT');
+      bumpGen();
+    } catch (_) { try { db.exec('ROLLBACK'); } catch (_) {} }
+  }
+  return { rows: out, scanned: visited, truncated };
+}
+
 async function searchInternal(rootAbs, q, extsRaw, limit) {
   const absNorm = norm(rootAbs);
   if (!covered(absNorm)) return null; // main also gates this; belt and braces
@@ -1304,6 +1584,20 @@ async function searchInternal(rootAbs, q, extsRaw, limit) {
     if (!chunk.length) { truncated = true; break; } // next candidate needs a read we no longer budget
     const results = await Promise.all(chunk.map(verifyRow));
     for (const r of results) { if (r && out.length < limit) out.push(r); }
+  }
+  // fresh-file pass: anything under this subtree the index rows cannot know
+  // yet (crawl running, watcher flush pending, or no watcher at all). Bounded
+  // by FRESH_* budgets; merges deduped and repairs the stale/missing rows.
+  const freshDirid = dirIdLookup(absNorm); // resolved once: see freshScanPass
+  if (out.length < limit && freshScanNeeded(absNorm, freshDirid)) {
+    const known = new Set();
+    for (const r of rows.values()) known.add(norm(rowAbs(r)));
+    try {
+      const f = await freshScanPass(rootAbs, absNorm, q, qLow, filter, known, limit - out.length, freshDirid);
+      for (const r of f.rows) { if (out.length < limit) out.push(r); }
+      if (f.truncated) truncated = true;
+    } catch (_) { /* search must not fail over freshness work */ }
+    out.sort((a, b) => b.mtime - a.mtime); // indexed hits came newest-first; keep it uniform
   }
   // hitting `limit` is plain capping (SQL-LIMIT semantics, not truncation):
   // truncated only means candidates went UNVERIFIED because a budget fired

@@ -17,7 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5193;
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-project-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-project-'));
 const FIX = path.join(TMP, 'fixture');
 const OUTSIDE = path.join(TMP, 'outside');
 fs.mkdirSync(FIX, { recursive: true });

@@ -16,7 +16,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 // ---------- temp fixture ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-save-test-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-save-test-'));
 const FIX = path.join(TMP, 'fixture');
 fs.mkdirSync(FIX, { recursive: true });
 

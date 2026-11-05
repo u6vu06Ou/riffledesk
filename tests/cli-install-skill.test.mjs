@@ -15,7 +15,7 @@ const SKILL = path.join(ROOT, 'skills', 'riffledesk', 'SKILL.md');
 const SNIPPET = path.join(ROOT, 'skills', 'riffledesk', 'AGENTS-snippet.md');
 let TMP;
 
-before(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-install-')); });
+before(() => { TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-install-')); });
 after(() => { fs.rmSync(TMP, { recursive: true, force: true }); });
 
 let seq = 0;

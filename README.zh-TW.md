@@ -156,7 +156,7 @@ Chromium、Firefox、Safari（後兩者最新版）。卡片堆需要 WebGL；�
 
 ## 設定
 
-第一次啟動會產生 `config.json`（不進 git；`config.example.json` 是空白範本）。鍵有：`roots`（額外可瀏覽根目錄）、`pinned`（釘選，介面會寫回）、`indexSkipDirs`、`indexMaxMB`、`indexContent`、`secretScan`、`secretScanSkipDirs`、`convoRoots`、`browser`。用 `RIFFLEDESK_CONFIG` 指向別的檔可以隔離一份設定。
+第一次啟動會產生 `config.json`（不進 git；`config.example.json` 是空白範本）。鍵有：`roots`（額外可瀏覽根目錄）、`pinned`（釘選，介面會寫回）、`indexSkipDirs`、`indexMaxMB`、`indexContent`、`indexRecrawlHours`（全量重爬間隔，預設 24 小時；兩次之間靠 `fs.watch` 在 ~1.5 秒內保持索引新鮮）、`secretScan`、`secretScanSkipDirs`、`convoRoots`、`browser`。用 `RIFFLEDESK_CONFIG` 指向別的檔可以隔離一份設定。
 
 ## 開發
 

@@ -16,7 +16,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const TMPL_DIR = path.join(ROOT, 'tests', 'fixtures', 'convos');
 
 // ---------- sandbox: temp home with fake transcript roots + real written files ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-convos-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-convos-'));
 const WRITTEN = path.join(TMP, 'written');
 fs.mkdirSync(path.join(WRITTEN, 'notes'), { recursive: true });
 const F_ALPHA = path.join(WRITTEN, 'alpha.md');

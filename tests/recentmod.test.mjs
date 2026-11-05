@@ -15,7 +15,7 @@ const PORT = 5192;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // ---------- fixture tree ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-rm-test-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-rm-test-'));
 const FIX = path.join(TMP, 'fixture');
 const mkdir = (...p) => fs.mkdirSync(path.join(FIX, ...p), { recursive: true });
 const write = (rel, text) => fs.writeFileSync(path.join(FIX, ...rel.split('/')), text);

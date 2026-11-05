@@ -18,7 +18,7 @@ test('background server outlives launcher, reuses port, guards lifecycle and res
   const probe = net.createServer();
   await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(PORT, '127.0.0.1', resolve); });
   await new Promise(resolve => probe.close(resolve));
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'riffle-service-'));
+  const tmp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffle-service-'));
   const cfg = path.join(tmp, 'config.json');
   fs.writeFileSync(cfg, JSON.stringify({ roots: [tmp], pinned: [], convoRoots: [] }));
   const env = { ...process.env, RIFFLEDESK_CONFIG: cfg, RIFFLEDESK_INDEX: 'off' };

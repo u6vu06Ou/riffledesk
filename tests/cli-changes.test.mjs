@@ -13,8 +13,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = path.join(ROOT, 'bin', 'riffledesk.js');
 let TMP;
 
-before(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-changes-')); });
-after(() => { fs.rmSync(TMP, { recursive: true, force: true }); });
+before(() => { TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-changes-')); });
+after(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {} });
 
 let seq = 0;
 // A fresh html file per test so the sibling .changes.json never collides.

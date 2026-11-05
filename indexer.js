@@ -20,8 +20,24 @@ const { Worker } = require('node:worker_threads');
 const { loadSqlite } = require('./indexshared');
 const { createCountCache } = require('./countcache');
 
-const RECRAWL_INTERVAL_MS = Number(process.env.RIFFLEDESK_RECRAWL_MS) || 60 * 60 * 1000;
-const BOOT_STALE_MS = Number(process.env.RIFFLEDESK_BOOT_STALE_MS) || 60 * 60 * 1000;
+// Full recrawl cadence: once a day. fs.watch keeps the index live within ~1.5 s
+// between crawls (watcher errors self-heal by resyncing the root, and roots that
+// cannot be watched at all get a slower periodic rescan in the worker), so the
+// hourly pass was pure churn. config.indexRecrawlHours tunes it; the env vars
+// stay as test overrides. Exported for unit tests.
+const DEFAULT_RECRAWL_HOURS = 24;
+function resolveRecrawlMs(env, opts) {
+  const e = Number(env && env.RIFFLEDESK_RECRAWL_MS);
+  if (Number.isFinite(e) && e > 0) return e;
+  const h = opts ? Number(opts.recrawlHours) : NaN;
+  return (Number.isFinite(h) && h > 0 ? h : DEFAULT_RECRAWL_HOURS) * 3600000;
+}
+function resolveBootStaleMs(env, opts) {
+  const e = Number(env && env.RIFFLEDESK_BOOT_STALE_MS);
+  if (Number.isFinite(e) && e > 0) return e;
+  return resolveRecrawlMs(env, opts);
+}
+function fmtAge(ms) { return ms < 2 * 3600000 ? `${Math.round(ms / 60000)} min` : `${(ms / 3600000).toFixed(1)} h`; }
 
 function createIndexer(deps) {
   const {
@@ -39,7 +55,7 @@ function createIndexer(deps) {
     schedule, crawlAll, crawlRoot, stop,
     search, deepCounts, status, reindexDir, noteListDir, noteSearchOutside,
     renamed, removed, setContentEnabled, secretFlags, directCounts, listPage,
-    recentModified
+    recentModified, nameSearch
   };
   if (!sqlite) return idx;
 
@@ -236,15 +252,18 @@ function createIndexer(deps) {
   // launch burned ~40% of a core for 1-2 min on the production corpus). The
   // crawler is mostly a safety net now: fs.watch between crawls keeps the DB
   // (and the diragg rollups) current within seconds.
+  function recrawlMs() { return resolveRecrawlMs(process.env, getIndexOptions ? getIndexOptions() : null); }
+  function bootStaleMs() { return resolveBootStaleMs(process.env, getIndexOptions ? getIndexOptions() : null); }
+
   function maybeBootCrawl() {
     if (bootCrawlFired) return;
     bootCrawlFired = true;
-    const stale = !idx.lastCrawlAt || (Date.now() - idx.lastCrawlAt > BOOT_STALE_MS);
+    const stale = !idx.lastCrawlAt || (Date.now() - idx.lastCrawlAt > bootStaleMs());
     if (stale || aggPendingFromWorker) {
       if (aggPendingFromWorker && !stale) log('index: diragg rollup missing — boot crawl to build it');
       send(crawlJob());
     } else {
-      log(`index: boot crawl skipped (last crawl ${Math.round((Date.now() - idx.lastCrawlAt) / 60000)} min ago; watchers keep the index live)`);
+      log(`index: boot crawl skipped (last crawl ${fmtAge(Date.now() - idx.lastCrawlAt)} ago; watchers keep the index live)`);
     }
   }
 
@@ -254,7 +273,7 @@ function createIndexer(deps) {
     maybeBootCrawl(); // no-op until the worker's 'ready' set lastCrawlAt
     const { scopes, realScopes } = getScopes();
     send({ op: 'watch', roots: getRoots(), scopes, realScopes }); // watchers do not need a crawl
-    intervalTimer = setInterval(() => send(crawlJob()), RECRAWL_INTERVAL_MS);
+    intervalTimer = setInterval(() => send(crawlJob()), recrawlMs());
     intervalTimer.unref();
   }
 
@@ -586,6 +605,44 @@ function createIndexer(deps) {
     } catch (_) { return null; }
   }
 
+  // ---------- global FILE-NAME search (/api/names) ----------
+  // The search box used to filter only the folder on screen: someone looking at
+  // folder A typing a name that lives in folder B concluded the file did not
+  // exist. This searches names across the whole indexed scope — index-only, no
+  // filesystem walk. LIKE '%q%' walks the files table (~45 ms on 360k rows);
+  // ordering in SQL keeps the candidate set bounded. Ranking: exact name, then
+  // name-starts-with, then contains, newest first inside each bucket.
+  // Scope is enforced by the caller (isAllowed on every returned path) because
+  // extra roots can point outside; skip/secret rules are already crawl-time.
+  function escapeLike(s) {
+    return s.replace(/[\\%_]/g, c => '\\' + c);
+  }
+  function nameSearch(q, limit, filter = { mode: 'all' }) {
+    if (!idx.available) return null;
+    const ext = deepExtClause(filter);
+    const d = openRead();
+    if (!d) return null;
+    const like = '%' + escapeLike(q) + '%';
+    const prefix = escapeLike(q) + '%';
+    const out = [];
+    try {
+      const rows = rprep(`SELECT f.name, f.size, f.mtime, f.ext, COALESCE(d.rpath, d.path) AS dp
+          FROM files f JOIN dirs d ON d.id = f.dirid
+          WHERE f.name LIKE ? ESCAPE '\\'${ext.sql}
+          ORDER BY (lower(f.name) = lower(?) OR lower(f.name) = lower(?) || lower(f.ext)) DESC,
+                   (f.name LIKE ? ESCAPE '\\') DESC,
+                   f.mtime DESC
+          LIMIT ?`).all(like, ...ext.args, q, q, prefix, limit);
+      for (const r of rows) {
+        const ln = String(r.name).toLowerCase();
+        if (ln === 'index.db' || ln === 'index.db-wal' || ln === 'index.db-shm') continue;
+        if (ln.startsWith('.rdtmp-')) continue;
+        out.push({ name: r.name, path: path.join(r.dp, r.name), dir: r.dp, mtime: r.mtime, size: r.size, ext: r.ext });
+      }
+      return out;
+    } catch (_) { return null; }
+  }
+
   // ---------- 「最近改動（不確定是誰改的）」(/api/recentmod) ----------
   // Files modified since cutoffMs under marker-project dirs — markers mirror
   // server.js detectAI: a direct child file named agents.md/claude.md/gemini.md,
@@ -669,4 +726,4 @@ function createIndexer(deps) {
   return idx;
 }
 
-module.exports = { createIndexer };
+module.exports = { createIndexer, resolveRecrawlMs, resolveBootStaleMs };

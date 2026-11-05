@@ -257,6 +257,12 @@ async function openPath(path, line) {
 // 背景時 AI 分開推了好幾個檔（N 次 open）：點通知或回到前景時全部一起看——
 // 收成一疊（同 riffledesk show），不是只開最後一個。只有一個檔就照舊直接開。
 const selfPileIds = new Set();    // 自己為了合併而建的疊：SSE 回來時不要再跳一次「新的疊」提示
+// 合併疊的名字用檔名，不然清單裡一排「已交付 3 個檔案」分不出誰是誰
+function mergeTitle(uniq) {
+  const name = String(uniq[uniq.length - 1].path).split(/[\\/]/).pop();
+  return t('pileMergeTitle', { name, k: uniq.length - 1, n: uniq.length });
+}
+
 async function openPendingAll(list) {
   const uniq = [];
   for (const r of list) if (!uniq.some(u => u.path === r.path)) uniq.push(r);
@@ -267,7 +273,7 @@ async function openPendingAll(list) {
   try {
     const r = await fetch('/api/pile', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ paths: uniq.map(u => u.path), title: t('projNotifMany', { n: uniq.length }), source: 'notif-merge' })
+      body: JSON.stringify({ paths: uniq.map(u => u.path), title: mergeTitle(uniq), source: 'notif-merge' })
     });
     const d = await r.json();
     if (d && d.ok && d.id) { selfPileIds.add(d.id); return openPile(d.id, null); }

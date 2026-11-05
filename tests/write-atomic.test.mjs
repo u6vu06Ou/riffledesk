@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { writeAtomic } = require('../fileops.js');
 
-const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'rd-writeatomic-'));
+const tmpDir = () => fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'rd-writeatomic-'));
 function failWith(code) { const e = new Error(code + ' (simulated)'); e.code = code; throw e; }
 
 test('normal path writes and leaves no temp file', () => {

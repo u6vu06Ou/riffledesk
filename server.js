@@ -346,6 +346,8 @@ function loadConfig() {
       if (Array.isArray(raw.convoRoots)) cfg.convoRoots = raw.convoRoots; // AI transcript roots (strings or {kind,dir})
       if (Array.isArray(raw.indexSkipDirs)) cfg.indexSkipDirs = raw.indexSkipDirs.map(String);
       if (Number.isFinite(Number(raw.indexMaxMB))) cfg.indexMaxMB = Number(raw.indexMaxMB);
+      // full-recrawl cadence in hours (default 24; fs.watch keeps the index live between crawls)
+      if (Number.isFinite(Number(raw.indexRecrawlHours)) && Number(raw.indexRecrawlHours) > 0) cfg.indexRecrawlHours = Number(raw.indexRecrawlHours);
       // content layer default: see README "Disk budget" — flipped only after a
       // measured full-crawl projection is known (indexContent in config wins)
       if (raw.indexContent !== undefined) cfg.indexContent = !!raw.indexContent;
@@ -508,6 +510,40 @@ let realScopesCache = null;
 function realNorm(p) {
   try { return norm(fs.realpathSync(p)); } catch (_) { return norm(p); }
 }
+// Same, for a path that may not exist YET (a missing file must answer 404, not
+// 403). Walk up to the nearest existing ancestor, realpath THAT, and re-append
+// the rest. Without this, a missing file under a symlinked allowed dir (macOS
+// os.tmpdir() = /var/folders/… → /private/var/folders/…) realpaths to nothing,
+// realNorm() falls back to the raw path and the scope check fails closed.
+// Security: once an existing ancestor is reached, the resolved real location
+// still has to be in scope — so a symlink pointing outside stays 403. Only a
+// segment that genuinely does not exist is appended literally; a segment that
+// EXISTS but cannot be resolved (dangling link, EACCES, ELOOP) fails closed,
+// because appending it literally would claim an in-scope location the real
+// one does not have (the write would land through the link, wherever it goes).
+const REAL_UNRESOLVED = '\0unresolved';
+function realNormLoose(p) {
+  let abs = path.resolve(p);
+  // Windows: 'd:' resolves to the drive's CURRENT directory, not its root
+  if (IS_WIN && /^[a-z]:$/i.test(abs)) abs += path.sep;
+  let cur = abs;
+  const rest = [];
+  for (;;) {
+    try {
+      const tail = rest.slice().reverse();
+      const real = fs.realpathSync(cur);
+      return norm(tail.length ? path.join(real, ...tail) : real);
+    } catch (_) {
+      let exists = false;
+      try { fs.lstatSync(cur); exists = true; } catch (_) {}
+      if (exists) return REAL_UNRESOLVED; // there, but unresolvable → fail closed
+      const parent = path.dirname(cur);
+      if (parent === cur) return REAL_UNRESOLVED; // root itself unresolvable
+      rest.push(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
 function fixScopeForRealpath(s) {
   // Windows only: 磁碟根 norm 後是 'd:'，直接 realpath('d:') 會解成「該磁碟的目前目錄」
   // （伺服器在 D 槽跑時變成專案資料夾）→ 整個 D 槽被判出界。磁碟根要補回反斜線再 realpath。
@@ -525,10 +561,11 @@ function underAny(n, scopes) {
 }
 
 function isAllowed(absPath) {
-  const n = norm(absPath);
-  if (!underAny(n, allowedScopes())) return false;
-  if (!underAny(realNorm(absPath), realScopes())) return false;
-  return true;
+  if (typeof absPath !== 'string' || !absPath) return false;
+  let weakly;
+  try { weakly = norm(absPath); } catch (_) { return false; } // null bytes etc.
+  if (!underAny(weakly, allowedScopes())) return false;
+  return underAny(realNormLoose(absPath), realScopes());
 }
 
 function existingRoots() {
@@ -1277,6 +1314,41 @@ async function apiRecentMod(res, u) {
   const body = { ok: true, hours, indexed: true, files, ms: Date.now() - t0 };
   recentModCache = { t: Date.now(), hours, exts: extsRaw, body };
   return sendJson(res, 200, body);
+}
+// GET /api/names?q=…&limit=50 — file NAMES across the whole indexed scope.
+// The search box's local filter only sees the folder on screen; this answers
+// "does the file exist anywhere?" while typing. Index-only (no walk); every
+// hit is re-checked with isAllowed because extra roots may leave the scope.
+// index unavailable → { ok: true, files: [], indexed: false } (UI just shows
+// nothing rather than an error).
+async function apiNames(res, u) {
+  const t0 = Date.now();
+  const q = (u.searchParams.get('q') || '').trim();
+  const rawLimit = Number(u.searchParams.get('limit'));
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(200, Math.floor(rawLimit)) : 50;
+  if (!q) return sendJson(res, 400, { ok: false, error: 'empty q' });
+  if (q.length > 200) return sendJson(res, 400, { ok: false, error: 'q too long' });
+  if (!indexer || !indexer.available || !indexer.nameSearch) {
+    return sendJson(res, 200, { ok: true, files: [], ms: Date.now() - t0, indexed: false });
+  }
+  let rows;
+  const extsRaw = u.searchParams.get('exts');
+  // 壞掉的 exts 不該讓整個面板 500：退回「全部」；太多副檔名就截斷（SQLite 變數上限）
+  let filter = { mode: 'all' };
+  if (extsRaw) {
+    try { filter = parseExts(extsRaw.slice(0, 2000)); } catch (_) { filter = { mode: 'all' }; }
+    if (filter.set && filter.set.size > 200) filter = { mode: 'set', set: new Set([...filter.set].slice(0, 200)) };
+    if (filter.set && !filter.set.size) filter = { mode: 'all' };   // "exts=,," 之類：當作沒篩
+  }
+  try { rows = indexer.nameSearch(q, limit * 2, filter); } catch (_) { rows = null; }
+  if (!rows) return sendJson(res, 200, { ok: true, files: [], ms: Date.now() - t0, indexed: false });
+  const files = [];
+  for (const r of rows) {
+    if (files.length >= limit) break;
+    if (!isAllowed(r.path)) continue;
+    files.push({ name: r.name, path: r.path, dir: r.dir, mtime: r.mtime, size: r.size, ext: r.ext });
+  }
+  return sendJson(res, 200, { ok: true, files, ms: Date.now() - t0, indexed: true });
 }
 async function apiWhichConvo(res, u) {
   const q = u.searchParams.get('path');
@@ -2344,6 +2416,7 @@ async function requestHandler(req, res, server) {
     if (p === '/api/convos') return apiConvos(res, u);
     if (p === '/api/convo') return apiConvo(res, u);
     if (p === '/api/recent') return apiRecent(res, u);
+    if (p === '/api/names') return apiNames(res, u);
     if (p === '/api/recentmod') return apiRecentMod(res, u);
     if (p === '/api/whichconvo') return apiWhichConvo(res, u);
 
@@ -2465,12 +2538,14 @@ function start(port) {
       getScopes: () => ({ scopes: allowedScopes(), realScopes: realScopes() }),
       getIndexOptions: () => {
         const mb = Number(config.indexMaxMB);
+        const rh = Number(config.indexRecrawlHours);
         return {
           skipDirs: Array.isArray(config.indexSkipDirs) ? config.indexSkipDirs : [],
           maxMB: Number.isFinite(mb) && mb >= 0 ? mb : 2048,
           contentEnabled: config.indexContent !== false,
           secretScan: config.secretScan !== false,
-          secretSkipDirs: Array.isArray(config.secretScanSkipDirs) ? config.secretScanSkipDirs : []
+          secretSkipDirs: Array.isArray(config.secretScanSkipDirs) ? config.secretScanSkipDirs : [],
+          recrawlHours: Number.isFinite(rh) && rh > 0 ? rh : 24
         };
       },
       KIND, TEXTLIKE, READABLE_EXTS,
@@ -2496,6 +2571,21 @@ function start(port) {
       if (now % 5000 < 250 && worst > 30) { console.log(`${PKG.name}: loopwatch worst stall ${worst}ms`); worst = 0; }
     }, 200);
     t.unref();
+  }
+  // CPU self-sampler for tests/cpu-budget.mjs: one line per window with
+  // process-wide usage (main thread + index worker + V8 helpers + libuv pool)
+  // as % of one core. Off unless RIFFLEDESK_CPU_SAMPLE_MS is set.
+  const cpuSampleMs = Number(process.env.RIFFLEDESK_CPU_SAMPLE_MS);
+  if (Number.isFinite(cpuSampleMs) && cpuSampleMs >= 100) {
+    let lastU = process.cpuUsage(), lastT = performance.now();
+    const ct = setInterval(() => {
+      const u = process.cpuUsage();
+      const now = performance.now();
+      const pct = (((u.user - lastU.user) + (u.system - lastU.system)) / 1000) / (now - lastT) * 100;
+      lastU = u; lastT = now;
+      console.log(`${PKG.name}: cpusample ${pct.toFixed(1)}`);
+    }, cpuSampleMs);
+    ct.unref();
   }
   server.listen(port, HOST, () => {
     console.log(`${PKG.name} listening: http://${HOST}:${port}/`);

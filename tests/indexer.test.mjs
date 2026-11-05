@@ -14,7 +14,7 @@ const PORT = 5180;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // ---------- temp fixture ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-idx-test-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-idx-test-'));
 const FIX = path.join(TMP, 'fixture');
 const OUT = path.join(TMP, 'outside'); // outside the indexed roots on purpose
 const mkdir = (...p) => fs.mkdirSync(path.join(FIX, ...p), { recursive: true });
@@ -252,7 +252,7 @@ test('index suite', async (t) => {
 // the DB size budget: indexMaxMB <= 0 forces the cap immediately, so only
 // metadata is indexed and status reports capped
 test('index size cap: metadata-only once indexMaxMB is exceeded', async (t) => {
-  const TMP2 = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-idx-cap-'));
+  const TMP2 = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-idx-cap-'));
   const FIX2 = path.join(TMP2, 'fixture');
   fs.mkdirSync(FIX2, { recursive: true });
   fs.writeFileSync(path.join(FIX2, 'cappedname.md'), 'capcontentword lives inside here\n');
@@ -305,7 +305,7 @@ test('index size cap: metadata-only once indexMaxMB is exceeded', async (t) => {
 // two-layer index: config indexContent / POST /api/index/content toggles the
 // content (FTS) layer; the metadata layer (names, deepCount) stays on either way
 test('index content layer toggle: off → live scan; on → indexed again', async () => {
-  const TMP3 = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-idx-toggle-'));
+  const TMP3 = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-idx-toggle-'));
   const FIX3 = path.join(TMP3, 'fixture');
   fs.mkdirSync(FIX3, { recursive: true });
   fs.writeFileSync(path.join(FIX3, 'togglename.md'), 'togglemarkword lives in this body\n');

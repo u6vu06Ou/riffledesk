@@ -213,6 +213,7 @@ const DICT = {
     projSec: '剛收到的檔案',
     projNotifOne: '已交付：{name}',
     projNotifMany: '已交付 {n} 個檔案',
+    pileMergeTitle: '{name} 等 {n} 個',
     projGone: '檔案不在了：{name}',
     pileSec: 'Agent 交付',
     convoInfo_heading: '對話資訊', convoInfo_tool: 'Agent', convoInfo_first: '第一句話',
@@ -225,8 +226,7 @@ const DICT = {
     pileBar: '交付：{title}（{n} 個）',
     pileBack: '✕ 回到原本資料夾（Esc）',
     pileNone: '這一疊的檔案都不在了',
-    pileShowsAll: '整疊都顯示',
-    pileFilterHint: 'Agent 交付的疊不受類型篩選影響。以下選擇只套用於資料夾與最近檔案。',
+    pileFilterHint: '這一疊有自己的類型篩選，預設全部；離開疊就恢復原本資料夾的選擇。',
     tabsBtn: '網頁',
     tabsTitle: '看 Chrome 現在開著的所有網頁（按 T 也可以；再按一次回到檔案）',
     tabsBar: 'Chrome 網頁：{n} 個',
@@ -277,6 +277,11 @@ const DICT = {
     tabsLocalGoneBody: '檔案可能被移走、刪掉了，或不在 RiffleDesk 的允許範圍內',
     tabsSearchHit: '網頁符合 {n} 個（「{q}」）',
     tabMatchStrip: '網頁符合 {n} 個 → 看網頁',
+    nameOther: '其他位置的檔名',
+    nameNone: '其他地方也沒有符合的檔名',
+    nameOtherType: '其他位置的檔名（只看 {exts}）',
+    nameOtherTypeTitle: '只列符合目前類型篩選的檔名',
+    nameTrunc: '只列前面 {n} 個',
     backFullLabel: '回到完整畫面',
     backFullTitle: '回到完整畫面（Alt+Shift+R）',
     panelBack: '← 返回', panelBackTitle: '關掉閱讀覆層，回到卡片堆（Esc）',
@@ -284,7 +289,8 @@ const DICT = {
     chipHtml: 'HTML／互動 3D',
     chipMultiHint: '可直接複選；只篩選畫面上顯示的檔案，不影響 Agent 交付。互動 3D 網頁屬於 HTML。',
     chipTypeDrop: '類型',
-    chipTypeAll: '全部類型'
+    chipTypeAll: '全部類型',
+    chipTypeAllShort: '全部'
   },
   en: {
     brand: 'RiffleDesk',
@@ -498,6 +504,7 @@ const DICT = {
     projSec: 'Just received',
     projNotifOne: 'Delivered: {name}',
     projNotifMany: 'Delivered {n} files',
+    pileMergeTitle: '{name} + {k} more',
     projGone: 'The file is gone: {name}',
     pileSec: 'Agent deliveries',
     convoInfo_heading: 'Conversation info', convoInfo_tool: 'Agent', convoInfo_first: 'First message',
@@ -510,8 +517,7 @@ const DICT = {
     pileBar: 'Delivered: {title} ({n})',
     pileBack: '✕ Back to the folder (Esc)',
     pileNone: 'None of the files in this pile are left',
-    pileShowsAll: 'All files in this pile',
-    pileFilterHint: 'AI handoff piles always show all delivered files. These type choices apply only to folders and recent files.',
+    pileFilterHint: 'This pile has its own type filter and starts at All; leaving the pile restores the folder’s choice.',
     tabsBtn: 'Tabs',
     tabsTitle: 'See every tab open in Chrome (or press T; press again to go back to files)',
     tabsBar: 'Chrome tabs: {n}',
@@ -562,6 +568,11 @@ const DICT = {
     tabsLocalGoneBody: 'It may have been moved or deleted, or sits outside the folders RiffleDesk may read',
     tabsSearchHit: '{n} tabs match “{q}”',
     tabMatchStrip: '{n} tabs match → view tabs',
+    nameOther: 'Matching names elsewhere',
+    nameNone: 'No matching names anywhere else',
+    nameOtherType: 'Names elsewhere (type: {exts})',
+    nameOtherTypeTitle: 'Only names matching the current type filter',
+    nameTrunc: 'showing the first {n}',
     panelBack: '← Back', panelBackTitle: 'Close the reading overlay, back to the card stack (Esc)',
     backFullLabel: 'Back to the full window',
     backFullTitle: 'Back to the full window (Alt+Shift+R)',
@@ -569,7 +580,8 @@ const DICT = {
     chipHtml: 'HTML / interactive 3D',
     chipMultiHint: 'Select multiple types. This filters what is on screen, not what agents deliver. Interactive 3D pages are HTML.',
     chipTypeDrop: 'Type',
-    chipTypeAll: 'All types'
+    chipTypeAll: 'All types',
+    chipTypeAllShort: 'All'
   }
 };
 

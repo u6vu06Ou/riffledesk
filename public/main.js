@@ -19,6 +19,7 @@ import { showConvoInfo, convoInfoLabel } from './convo-info.js';
 import { TAB_X_ZONE, TAB_AI_ZONE, tabBadgeAt } from './thumbs.js';
 import { copyTabForAI } from './tabcopy.js';
 import { loadSharedPrefs, sharedPrefsNow, postSharedPrefs } from './prefs.js';
+import { initNameHits, onQuery as nameHitsQuery, keydown as nameHitsKey, setExts as setNameHitExts } from './namehits.js';
 
 const canvas = document.getElementById('gl');
 const treeEl = document.getElementById('tree');
@@ -105,6 +106,13 @@ const CHIP_DEFS = [
 // 全新安裝（localStorage 還沒存過）停在「全部可讀」：第一次打開就看得到所有
 // 能看的檔；使用者動過 chips 之後才照 localStorage 的選取沿用。
 let chipsOn = ['readable'];
+// 疊裡有自己的類型選取：預設全部（交付的檔一顆都不藏），離開疊就丟掉，
+// 資料夾原本的 chipsOn 完全不動。
+let pileChips = ['all'];
+// pileState 在本段後面才宣告，但類型 getter 在模組頂就先被呼叫（tree.exts）：
+// 這裡先用 var 宣告佔位，正式宣告改到下面指派。
+var pileState = null;
+const curChips = () => (pileState ? pileChips : chipsOn);
 try {
   const saved = JSON.parse(localStorage.getItem('floderChips2') || 'null');
   if (Array.isArray(saved) && saved.length) {
@@ -113,11 +121,15 @@ try {
   }
 } catch (_) {}
 
+// 名稱面板跟著目前的類型篩選（搜尋期間放寬的那種不算，面板是全域清單）
+function refreshNameHits() { try { setNameHitExts(extsParam()); } catch (_) {} }
+
 function extsParam() {
-  if (chipsOn.includes('all')) return 'all';
-  if (chipsOn.includes('readable')) return 'readable';
+  const on = curChips();
+  if (on.includes('all')) return 'all';
+  if (on.includes('readable')) return 'readable';
   const set = new Set();
-  for (const id of chipsOn) {
+  for (const id of on) {
     const def = CHIP_DEFS.find(d => d.id === id);
     if (def && def.exts) def.exts.forEach(e => set.add(e));
   }
@@ -126,8 +138,17 @@ function extsParam() {
 
 // chips 選取改了之後的共同動作：存檔、重畫 chips/下拉、重載卡堆與資料夾數字
 function applyChips(next) {
-  const same = next.length === chipsOn.length && next.every(id => chipsOn.includes(id));
+  const live = curChips();
+  const same = next.length === live.length && next.every(id => live.includes(id));
   if (same) return;
+  if (pileState) {
+    // 疊只用疊自己的選取；不外溢到資料夾的設定
+    pileChips = next;
+    buildChips();
+    applyPile();
+    refreshNameHits();
+    return;
+  }
   chipsOn = next;
   try { localStorage.setItem('floderChips2', JSON.stringify(chipsOn)); } catch (_) {}
   buildChips();
@@ -137,6 +158,7 @@ function applyChips(next) {
   else if (convoState) loadPseudo();          // 偽資料夾（AI 對話區）也照 chips 重新篩
   refreshConvoCounts();
   tree.setExts(effectiveExts());
+  refreshNameHits();
 }
 
 function buildChips() {
@@ -146,20 +168,22 @@ function buildChips() {
   const details = document.createElement('details');
   details.open = !!wasOpen;
   const summary = document.createElement('summary');
-  summary.textContent = pileState ? t('pileShowsAll') : t('chipTypeDrop') + ': ' + CHIP_DEFS.filter(d => chipsOn.includes(d.id)).map(d => d.label).join('、');
+  summary.textContent = t('chipTypeDrop') + ': ' +
+    CHIP_DEFS.filter(d => curChips().includes(d.id)).map(d => d.id === 'all' ? t('chipTypeAllShort') : d.label).join('、');
   summary.title = summary.textContent;
   details.appendChild(summary);
   const choices = document.createElement('div'); choices.className = 'type-choices';
   const hint = document.createElement('p'); hint.textContent = t(pileState ? 'pileFilterHint' : 'chipMultiHint'); choices.appendChild(hint);
   for (const def of CHIP_DEFS) {
+    const on = curChips();
     const b = document.createElement('button');
-    b.className = 'chip' + (chipsOn.includes(def.id) ? ' on' : '');
-    b.textContent = (chipsOn.includes(def.id) ? '☑ ' : '☐ ') + def.label;
+    b.className = 'chip' + (on.includes(def.id) ? ' on' : '');
+    b.textContent = (on.includes(def.id) ? '☑ ' : '☐ ') + (def.id === 'all' ? t('chipTypeAllShort') : def.label);
     b.setAttribute('role', 'checkbox');
-    b.setAttribute('aria-checked', String(chipsOn.includes(def.id)));
+    b.setAttribute('aria-checked', String(on.includes(def.id)));
     b.dataset.chip = def.id;
     b.addEventListener('click', () => {
-      const specific = chipsOn.filter(id => !['all', 'readable'].includes(id));
+      const specific = curChips().filter(id => !['all', 'readable'].includes(id));
       const next = def.special ? [def.id] : specific.includes(def.id)
         ? (specific.length > 1 ? specific.filter(id => id !== def.id) : ['readable'])
         : [...specific, def.id];
@@ -193,7 +217,7 @@ function buildChipSel() {
     chipSel.appendChild(o);
   }
   // 多選（Ctrl 點的）在下拉沒有對應單一值 → 顯示第一個選中的
-  chipSel.value = chipsOn[0] || 'all';
+  chipSel.value = curChips()[0] || 'all';
 }
 if (chipSel) {
   chipSel.title = t('chipTypeDrop');
@@ -560,7 +584,8 @@ tree.exts = extsParam();
 // 左樹最上面（快速存取之上）的兩個偽資料夾區塊。來源是本機 AI agent（Claude/Codex）
 // 自己的對話記錄，伺服器 /api/convos 系列端點回來。點下去＝把那份清單載進卡堆。
 let convoState = null;        // 目前卡堆在看的偽資料夾：{kind:'recent'|'changed',hours} | {kind:'convo',id,title}
-let pileState = null;         // 目前卡堆在看的一疊：{id, title, files}（AI 挑好的清單）
+// pileState 在 chips 段以 var 先宣告（模組頂就會被 curChips 讀到）
+pileState = null;             // 目前卡堆在看的一疊：{id, title, files}（AI 挑好的清單）
 let pileReturn = null;        // 開疊之前的資料夾：✕／Esc 回那裡
 // 開疊時順便自動開的閱讀欄：{path, mode, from}。使用者自己換檔／換版面就清掉，
 // 離開疊時只收「還停在這個自動開的檔、版面也沒被動過」的那種。
@@ -595,11 +620,12 @@ function el(tag, cls, text) {
 
 // 跟伺服器 parseExts 同一套語意的 client 版（token 化 chips → 檔案收不收）
 function chipsAcceptFile(f) {
-  if (searchBroad) return true;
-  if (chipsOn.includes('all')) return true;
-  if (chipsOn.includes('readable')) return f.kind != null;
+  if (searchBroad && !pileState) return true;   // 搜尋時放寬；疊裡仍照疊自己的選擇
+  const on = curChips();
+  if (on.includes('all')) return true;
+  if (on.includes('readable')) return f.kind != null;
   const set = new Set();
-  for (const id of chipsOn) {
+  for (const id of on) {
     const def = CHIP_DEFS.find(d => d.id === id);
     if (def && def.exts) def.exts.forEach(e => set.add(e));
   }
@@ -978,8 +1004,8 @@ function showPileBar() {
 
 function applyPile() {
   if (!pileState) return;
-  const files = pileState.files;
-  updatePileCount(pileState.id, files.length);
+  const files = pileState.files.filter(chipsAcceptFile);
+  updatePileCount(pileState.id, pileState.files.length);   // 徽章＝這一疊實際交付幾顆，不受篩選影響
   stack.setFolder(pileState.title, files);
   showPileBar();
   statusEl.textContent = files.length ? t('fileCount', { path: pileState.title, n: files.length }) : t('pileNone');
@@ -1032,7 +1058,9 @@ async function openPile(id, row) {
   if (!pileState) pileReturn = convoState ? { kind: 'crow', meta: { ...convoState } }
     : (lockedFolder ? { kind: 'folder', path: lockedFolder } : null);
   pileState = { id: d.id, title: d.title || t('pileNoTitle'), files };
+  pileChips = ['all'];               // 新開一疊＝全部，先什麼都看得到
   buildChips();
+  refreshNameHits();
   updatePileCount(d.id, files.length);
   pileAutoReader = null;
   exitPseudo(true);
@@ -1053,9 +1081,12 @@ async function openPile(id, row) {
 // 鎖定到別的資料夾＝放棄這一疊（不回到疊、也不動卡堆，載入由 onLock 接手）
 function dropPile() {
   if (!pileState) return;
+  updatePileCount(pileState.id, pileState.files.length);   // 徽章回完整交付數
   pileState = null;
   pileReturn = null;
+  pileChips = ['all'];
   buildChips();
+  refreshNameHits();
   restorePileAutoReader(pileAutoReader);   // 疊被別的東西接手：順便開的閱讀欄也別留著
   for (const r of treeEl.querySelectorAll('#projPiles .sel')) r.classList.remove('sel');
 }
@@ -1079,9 +1110,13 @@ function closePile() {
   if (!pileState) return;
   const back = pileReturn;
   const auto = pileAutoReader;
+  // 徽章回到完整交付數：篩選只是畫面的事，檔案沒少
+  updatePileCount(pileState.id, pileState.files.length);
   pileState = null;
   pileReturn = null;
+  pileChips = ['all'];
   buildChips();
+  refreshNameHits();
   for (const r of treeEl.querySelectorAll('#projPiles .sel')) r.classList.remove('sel');
   for (const r of treeEl.querySelectorAll('.crow.sel')) r.classList.remove('sel');
   if (back && back.kind === 'folder') { tree.lock(back.path); restorePileAutoReader(auto); return; }
@@ -1557,6 +1592,8 @@ if (tabStrip) {
 }
 
 searchBox.addEventListener('keydown', e => {
+  // 方向鍵／Enter／Esc 先給「其他位置的檔名」面板；它吃掉就別再往下做內文搜尋
+  if (nameHitsKey(e)) { e.preventDefault(); return; }
   if (e.key === 'Enter') {
     e.preventDefault();
     // 分頁模式：Enter 不打內文搜尋——篩選即時生效了（內文也在比對範圍）
@@ -1573,6 +1610,7 @@ searchBox.addEventListener('keydown', e => {
 });
 searchBox.addEventListener('input', () => {
   if (tabsMode.active) { tabsMode.setQuery(searchBox.value); return; }
+  nameHitsQuery(searchBox.value);
   clearTimeout(tabStripTimer);
   tabStripTimer = setTimeout(refreshTabMatchStrip, 350);
   if (!searchBox.value.trim()) endContentSearch();
@@ -1680,6 +1718,7 @@ let searchBroad = false, searchTimer = null;
 searchBox.addEventListener('input', () => {
   if (tabsMode.active) return;   // 分頁模式的篩選由 tabsMode.setQuery 處理（標題／網址／內文）
   stack.setNameFilter(searchBox.value);
+  nameHitsQuery(searchBox.value);
   clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
     const broaden = searchBox.value.trim() !== '';
@@ -2639,6 +2678,13 @@ initLive({
   onTabFocus: id => tabsMode.focusTab(id)
 });
 
+// 「其他位置的檔名」：只列不在目前視圖裡的檔，點了走投影同一條開檔路徑
+refreshNameHits();
+initNameHits({
+  box: searchBox,
+  openPath: p => { projectOpen(p); },
+  getVisible: () => new Set(stack.files.map(f => norm(f.path)))
+});
 initProject({ openPath: projectOpen, openPile, attachPileRow: (row, id) => tree.attachCrow(row, { id, pile: true }) });
 initProjectSettings();
 

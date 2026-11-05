@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RiffleDesk Tabs Bridge",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Pushes your open tabs to the local RiffleDesk file browser (127.0.0.1) so they show up as cards. Nothing leaves the machine.",
   "permissions": ["tabs", "scripting", "storage", "alarms", "sidePanel", "idle", "sessions"],
   "host_permissions": ["<all_urls>"],

@@ -157,7 +157,7 @@ Chromium, Firefox and Safari — the last two latest versions. The card stack ne
 
 ## Configuration
 
-`config.json` is created on first start (git-ignored; `config.example.json` is the blank template). Keys: `roots` (extra browsable roots), `pinned` (starred folders, written back by the UI), `indexSkipDirs`, `indexMaxMB`, `indexContent`, `secretScan`, `secretScanSkipDirs`, `convoRoots`, `browser`. Point `RIFFLEDESK_CONFIG` at another file to isolate a profile.
+`config.json` is created on first start (git-ignored; `config.example.json` is the blank template). Keys: `roots` (extra browsable roots), `pinned` (starred folders, written back by the UI), `indexSkipDirs`, `indexMaxMB`, `indexContent`, `indexRecrawlHours` (full-recrawl cadence, default 24 — `fs.watch` keeps the index live within ~1.5 s between crawls), `secretScan`, `secretScanSkipDirs`, `convoRoots`, `browser`. Point `RIFFLEDESK_CONFIG` at another file to isolate a profile.
 
 ## Development
 

@@ -18,7 +18,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 // ---------- temp fixture ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-ops-test-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-ops-test-'));
 const FIX = path.join(TMP, 'fixture');
 fs.mkdirSync(path.join(FIX, 'subdir'), { recursive: true });
 fs.writeFileSync(path.join(FIX, 'a.txt'), 'hello world\n');

@@ -1,6 +1,6 @@
 {
   "name": "riffledesk",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Local-first 3D file browser (three.js card stack) with recursive full-text search — edits, renames and deletes are explicit, opt-in and undoable",
   "license": "MIT",
   "author": "u6vu06ou",
@@ -69,6 +69,7 @@
     "test:revise": "node tests/revise-e2e.mjs",
     "test:view": "node tests/view-restore-e2e.mjs",
     "test:select": "node tests/select-scroll-e2e.mjs",
+    "test:mdtable": "node tests/md-table-e2e.mjs",
     "build:ext": "node scripts/build-extension.mjs",
     "demo:make": "node scripts/demo/make-demo.mjs",
     "demo:record": "node scripts/demo/record.mjs",

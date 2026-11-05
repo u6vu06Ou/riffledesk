@@ -18,7 +18,7 @@ const PORT = 5179;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // ---------- temp fixture ----------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-test-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-test-'));
 const FIX = path.join(TMP, 'fixture');
 const mkdir = (...p) => fs.mkdirSync(path.join(FIX, ...p), { recursive: true });
 const write = (rel, text) => fs.writeFileSync(path.join(FIX, ...rel.split('/')), text);
@@ -118,6 +118,58 @@ after(() => {
 });
 
 // ---------- unit checks via exports (no server needed) ----------
+// Missing paths must be judged by the real location of their nearest EXISTING
+// ancestor: a missing file under a symlinked allowed dir is 404, not 403.
+// (macOS os.tmpdir() is /var/folders/…, a symlink to /private/var/folders/….)
+// Scope is narrowed to TMP via the test-only drive hook, so "outside" is real.
+test('unit: missing file under a symlinked allowed dir stays in scope', (t) => {
+  process.env.NODE_ENV = 'test';
+  process.env.RIFFLEDESK_TEST_DRIVES = TMP;
+  // empty roots: the temp tree is then the ONLY scope, so "outside" is real
+  process.env.FLODER_CONFIG = path.join(TMP, 'unit-config.json');
+  fs.writeFileSync(process.env.FLODER_CONFIG, JSON.stringify({ roots: [], pinned: [] }));
+  const require2 = createRequire(import.meta.url);
+  const srv = require2(path.join(ROOT, 'server.js'));
+  const IN = path.join(TMP, 'real-in');
+  const OUT = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-outside-'));
+  const LINK = path.join(TMP, 'link-in');
+  const ESC = path.join(TMP, 'link-out');
+  fs.mkdirSync(IN);
+  try {
+    fs.symlinkSync(IN, LINK, IS_WIN ? 'junction' : 'dir');
+    fs.symlinkSync(OUT, ESC, IS_WIN ? 'junction' : 'dir');
+  } catch (err) {
+    t.skip(`symlink creation failed: ${err.message}`);
+    return;
+  }
+  try {
+    fs.writeFileSync(path.join(IN, 'real.txt'), 'x\n');
+    assert.equal(srv.isAllowed(path.join(IN, 'real.txt')), true);
+    // the regression: ancestor realpath must resolve, so a missing file is in scope
+    assert.equal(srv.isAllowed(path.join(LINK, 'missing.txt')), true);
+    assert.equal(srv.isAllowed(path.join(LINK, 'missing-dir', 'deep.txt')), true);
+    // still fails closed: a symlink pointing outside the scope stays 403 even
+    // for a path that does not exist
+    assert.equal(srv.isAllowed(path.join(ESC, 'missing.txt')), false);
+    assert.equal(srv.isAllowed(path.join(OUT, 'missing.txt')), false);
+    // a DANGLING link exists but resolves nowhere: appending its target literally
+    // would lie about the real location, so it must fail closed too
+    const DANGLE = path.join(TMP, 'link-dangle');
+    try { fs.symlinkSync(path.join(TMP, 'gone', 'nowhere'), DANGLE, IS_WIN ? 'junction' : 'dir'); } catch (_) {}
+    if (fs.lstatSync(DANGLE, { throwIfNoEntry: false })) {
+      assert.equal(srv.isAllowed(path.join(DANGLE, 'x.txt')), false);
+    }
+    // bad input never throws
+    assert.equal(srv.isAllowed(''), false);
+  } finally {
+    fs.rmSync(LINK, { recursive: true, force: true });
+    fs.rmSync(ESC, { recursive: true, force: true });
+    fs.rmSync(IN, { recursive: true, force: true });
+    fs.rmSync(OUT, { recursive: true, force: true });
+    process.env.RIFFLEDESK_TEST_DRIVES = DRIVES;
+  }
+});
+
 test('unit: norm folds case only on Windows', () => {
   process.env.FLODER_CONFIG = path.join(TMP, 'unit-config.json'); // keep cfg writes in TMP
   const require2 = createRequire(import.meta.url);
@@ -271,8 +323,18 @@ test('api suite', async (t) => {
       assert.equal(r.status, 415);
     });
 
+    await t.test('missing file 404s, also under a symlinked dir inside the scope', async (t2) => {
+      const r = await getRaw(`/api/file?path=${encodeURIComponent(path.join(FIX, 'ghost.txt'))}`);
+      assert.equal(r.status, 404);
+      const LINK = path.join(FIX, 'nested-link');
+      try { fs.symlinkSync(path.join(FIX, 'notes'), LINK, IS_WIN ? 'junction' : 'dir'); }
+      catch (err) { t2.skip(`symlink creation failed: ${err.message}`); return; }
+      const via = await getRaw(`/api/file?path=${encodeURIComponent(path.join(LINK, 'ghost.txt'))}`);
+      assert.equal(via.status, 404, 'missing file under a symlinked allowed dir must be 404, not 403');
+    });
+
     await t.test('search: case-insensitive', async () => {
-      const lo = (await getJson(`/api/search?path=${encodeURIComponent(FIX)}&q=magicword`)).body;
+      const lo =(await getJson(`/api/search?path=${encodeURIComponent(FIX)}&q=magicword`)).body;
       const up = (await getJson(`/api/search?path=${encodeURIComponent(FIX)}&q=MAGICWORD`)).body;
       assert.equal(lo.files.length, up.files.length);
       assert.ok(up.files.length > 0);

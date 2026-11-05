@@ -6,7 +6,7 @@ import path from 'node:path';
 import convos from '../convos.js';
 
 test('native titles stay separate from first prompts; index-only renames refresh cached transcripts', async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'riffle-metadata-'));
+  const tmp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffle-metadata-'));
   try {
     const claude = path.join(tmp, 'projects', 'demo'), codex = path.join(tmp, 'codex', 'sessions');
     fs.mkdirSync(claude, { recursive: true }); fs.mkdirSync(codex, { recursive: true });

@@ -24,7 +24,7 @@ const DEMO = path.join(ROOT, 'tests/fixtures/secretdemo');
 const sqlite = loadSqlite();
 const haveSqlite = !!sqlite;
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'riffledesk-idxsec-test-'));
+const TMP = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffledesk-idxsec-test-'));
 const DB_PATH = path.join(TMP, 'index.db');
 const CONFIG_PATH = path.join(TMP, 'config.json');
 
