@@ -110,7 +110,7 @@ const pageErrors = [];
 async function main() {
   server = await startServer();
   browser = await chromium.launch({ executablePath: CHROME, headless: true });
-  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 }, locale: 'zh-TW' });
   await ctx.addInitScript(STUBS);
   // sound on from the start, notification permission granted
   await ctx.addInitScript(() => {
