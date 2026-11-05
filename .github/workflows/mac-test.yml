@@ -17,6 +17,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: mkdir -p docs/screenshots
       - name: Unit tests
         run: npm test
       - name: Browser checks (tables, name search, pile type filter, piles, projection)
