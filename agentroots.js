@@ -498,8 +498,11 @@ function isSystemOrTemp(abs, home) {
     : ['/tmp', '/var', '/private', '/usr', '/bin', '/sbin', '/etc', '/opt', '/System', '/Library',
        '/Applications', path.join(home, 'Library')];
   let tmp = null; try { tmp = os.tmpdir(); } catch (_) {}
-  // test fixtures live in the temp dir; only there is temp a legitimate workspace
-  return sys.some(under) || (process.env.NODE_ENV !== 'test' && under(tmp)) || isCloudSync(abs);
+  // test fixtures live in the temp dir (macOS: under /private/var, a system dir); only
+  // there is temp a legitimate workspace
+  let tmpReal = null; try { tmpReal = tmp && fs.realpathSync.native(tmp); } catch (_) {}
+  if (process.env.NODE_ENV === 'test' && (under(tmp) || under(tmpReal))) return isCloudSync(abs);
+  return sys.some(under) || under(tmp) || isCloudSync(abs);
 }
 
 // Cloud-synced folders (Google Drive, OneDrive, Dropbox, iCloud) stream files on demand:
