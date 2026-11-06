@@ -144,7 +144,7 @@ async function main() {
   await sleep(500);
   ok(await page.evaluate(() => document.body.classList.contains('mode-threecol')), 'opening a pile moves to the side-by-side layout');
   ok((await page.evaluate(() => window.__dbg.mode())) === 'threecol', 'layout state machine says threecol');
-  ok((await page.evaluate(() => window.__dbg.panel().file)) === 'one.md', 'the first pile file is open in the reader');
+  ok(['one.md','two.md','three.md'].includes(await page.evaluate(() => window.__dbg.panel().file)), 'the front pile card is open in the reader');
   ok((await page.evaluate(() => window.__dbg.pileBar())).includes('Three notes'), 'the pile bar is still there with the reader open');
 
   // ---------- 2b. Esc leaves the pile and takes the auto-opened reader with it, back to twocol
@@ -278,14 +278,14 @@ async function main() {
   await sleep(1200);
   ok((await page.evaluate(() => window.__dbg.pileRows())).length === 2, 'both piles are listed after a reload');
 
-  // ---------- 13. a ONE-file pile behaves like a projection: no toast, opens the file wide
+  // ---------- 13. a ONE-file pile behaves like a projection: no toast, opens the file full-width
   await page.evaluate(() => { const t = document.getElementById('toast'); t.classList.remove('on'); });
   const r3 = await post(page, { paths: [RD('alpha/one.md')], title: 'Just one', source: 'claude-code' });
   ok(r3.status === 200 && r3.body.count === 1, 'one-file pile accepted', r3.body);
   await page.waitForFunction(() => window.__dbg.panel().open && window.__dbg.panel().file === 'one.md', null, { timeout: 15000 });
   ok(true, 'a one-file pile opens the reader on that file');
-  ok(await page.evaluate(() => document.body.classList.contains('mode-wide')), 'a one-file pile lands on the wide layout');
-  ok((await page.evaluate(() => window.__dbg.mode())) === 'wide', 'layout state machine says wide');
+  ok(await page.evaluate(() => document.body.classList.contains('mode-full')), 'a one-file pile lands on the full-width reader');
+  ok((await page.evaluate(() => window.__dbg.mode())) === 'full', 'layout state machine says full');
   await sleep(3400);      // past the merge window: a toast would have appeared by now
   ok(!(await page.evaluate(() => document.getElementById('toast').classList.contains('on'))), 'a one-file pile raises no toast');
   ok((await page.evaluate(() => window.__dbg.pileState())) === null, 'a one-file pile does not switch the card stack');
@@ -301,13 +301,13 @@ async function main() {
   ok((await page.evaluate(() => window.__dbg.pileState())) === null, 'a two-file pile does not open itself');
   ok((await page.evaluate(() => window.__dbg.panel().file)) === 'one.md', 'the reader kept the previous file');
 
-  // ---------- 15. ?pile= of a ONE-file pile also opens the file wide (no pile view)
+  // ---------- 15. ?pile= of a ONE-file pile also opens the file full-width (no pile view)
   const onePage = await ctx.newPage();
   await onePage.goto(`${BASE}/?pile=${r3.body.id}`);
   await onePage.waitForFunction(() => window.__dbg && window.__dbg.ready(), null, { timeout: 20000 });
   await onePage.waitForFunction(() => window.__dbg.panel().open && window.__dbg.panel().file === 'one.md', null, { timeout: 15000 });
   ok(true, '?pile= with one file opens the reader');
-  ok(await onePage.evaluate(() => document.body.classList.contains('mode-wide')), '?pile= with one file lands on the wide layout');
+  ok(await onePage.evaluate(() => document.body.classList.contains('mode-full')), '?pile= with one file lands on the full-width reader');
   ok((await onePage.evaluate(() => window.__dbg.pileState())) === null, '?pile= with one file does not show the pile stack');
   await onePage.close();
 

@@ -59,7 +59,7 @@ if (haveSqlite) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const proc = haveSqlite ? spawn('node', ['server.js'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH },
+  env: { ...process.env, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH, RIFFLEDESK_AGENT_HOME: path.join(TMP, 'agenthome') },
   stdio: ['ignore', 'pipe', 'pipe'],
   windowsHide: true
 }) : null;

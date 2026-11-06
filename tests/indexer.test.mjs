@@ -54,6 +54,8 @@ fs.writeFileSync(CONFIG_PATH, JSON.stringify({ roots: [FIX], pinned: [] }, null,
 // An outer RIFFLEDESK_TEST_DRIVES value is appended, so a run can still force
 // the narrow POSIX scope on a Windows box (the temp dir alone is the only
 // "drive" here; the rest of C: stays out).
+const EMPTY_HOME = path.join(TMP, 'empty-home');
+fs.mkdirSync(EMPTY_HOME, { recursive: true });
 const DRIVES = [TMP, process.env.RIFFLEDESK_TEST_DRIVES].filter(Boolean).join(path.delimiter);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -67,7 +69,7 @@ async function getJson(p) {
 
 const proc = spawn('node', ['server.js'], {
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: 'test', RIFFLEDESK_TEST_DRIVES: DRIVES, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH },
+  env: { ...process.env, NODE_ENV: 'test', RIFFLEDESK_TEST_DRIVES: DRIVES, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH, RIFFLEDESK_AGENT_HOME: EMPTY_HOME },
   stdio: ['ignore', 'pipe', 'pipe'],
   windowsHide: true
 });
@@ -262,7 +264,7 @@ test('index size cap: metadata-only once indexMaxMB is exceeded', async (t) => {
   const BASE2 = `http://127.0.0.1:${PORT2}`;
   const proc2 = spawn('node', ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT2), FLODER_CONFIG: CONFIG2 },
+    env: { ...process.env, PORT: String(PORT2), FLODER_CONFIG: CONFIG2, RIFFLEDESK_AGENT_HOME: EMPTY_HOME },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   });
@@ -315,7 +317,7 @@ test('index content layer toggle: off → live scan; on → indexed again', asyn
   const BASE3 = `http://127.0.0.1:${PORT3}`;
   const proc3 = spawn('node', ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT3), FLODER_CONFIG: CONFIG3 },
+    env: { ...process.env, PORT: String(PORT3), FLODER_CONFIG: CONFIG3, RIFFLEDESK_AGENT_HOME: EMPTY_HOME },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   });

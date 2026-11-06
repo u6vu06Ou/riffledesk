@@ -1002,22 +1002,28 @@ function showPileBar() {
   pathBar.querySelector('.copy').style.display = 'none';
 }
 
-function applyPile() {
+function applyPile(deliver) {
   if (!pileState) return;
   const files = pileState.files.filter(chipsAcceptFile);
   updatePileCount(pileState.id, pileState.files.length);   // 徽章＝這一疊實際交付幾顆，不受篩選影響
   stack.setFolder(pileState.title, files);
   showPileBar();
   statusEl.textContent = files.length ? t('fileCount', { path: pileState.title, n: files.length }) : t('pileNone');
-  // 只有第一次進來才順便開第一顆檔。
-  if (files.length && !pileAutoReader) autoOpenPileFront(files[0]);
+  // 只有第一次進來才順便開第一顆檔（卡堆排過序：開的是最前面那張，不是伺服器給的原始順序，
+  // 否則閱讀欄和卡片對不起來）
+  if (files.length && !pileAutoReader) autoOpenPileFront(stack.view[0] || files[0], deliver);
 }
 
 // 疊展開後自動開第一顆檔進閱讀欄：卡堆讓到左邊（twocol→threecol），已在三欄以上不動。
 // 記下「這是順便開的」與開之前的版面，closePile 才收得回去。
-async function autoOpenPileFront(file) {
+// deliver＝AI 剛交付的疊：不管當下在什麼版面都回三欄（full／wide 下卡堆是藏著的，整疊
+// 就看不見了），並把左右對半分回來，讓卡堆佔滿中間一欄、整疊在正中央露出來。
+async function autoOpenPileFront(file, deliver) {
   const from = mode;
-  if (!PANEL && mode === 'twocol') setMode('threecol');
+  if (deliver) { vUser = 0.5; saveFrac('floderViewFrac', vUser); }
+  if (!PANEL && (deliver || mode === 'twocol')) setMode('threecol');
+  // 本來就在三欄時 setMode 會提早 return（同一個 mode），欄寬還是要照交付的對半分重算
+  if (deliver && !PANEL) { fracs = MODES[mode](); applyFracs(fracs); settleViewFor(mode); }
   const rec = { path: file.path, from, expectMode: mode };
   pileAutoReader = rec;                 // 先記：開檔途中使用者換檔就算他的
   stack.readingPath = file.path;
@@ -1045,9 +1051,10 @@ function restorePileAutoReader(auto) {
   else restore();
 }
 
-async function openPile(id, row) {
+async function openPile(id, row, deliver) {
   if (!id) return false;
   tabsMode.drop();   // 分頁模式中開一疊＝離開分頁模式（不還原）
+  clearDeliveryNameFilter();   // 疊是 AI 交來的一整疊，檔名搜尋留著會把它濾掉
   statusEl.textContent = t('reading');
   let d;
   try { d = await apiJson('/api/pile?id=' + encodeURIComponent(id)); }
@@ -1074,7 +1081,7 @@ async function openPile(id, row) {
     statusEl.textContent = t('pileNone');
     return true;
   }
-  applyPile();
+  applyPile(deliver);
   return true;
 }
 
@@ -1913,7 +1920,7 @@ async function bootUrlPile() {
     if (!opened) toast(t('pileNone'));
     return;
   }
-  const opened = await openPile(id, null).catch(() => false);
+  const opened = await openPile(id, null, true).catch(() => false);
   if (!opened) toast(t('pileNone'));
 }
 
@@ -2554,6 +2561,20 @@ function splitPath(p) {
   return { dir, name };
 }
 
+// AI 交付（投影／疊）一律以「看得到」為前提：檔名搜尋（stack.nameFilter）會把交付的檔
+// 從卡堆濾掉，類型 chips 也可能濾掉它的副檔名。搜尋字在交付時清掉（連搜尋期間的放寬
+// 一起收），再讓呼叫端把被 chips 濾掉的檔明確補進卡堆——交付的檔一顆都不能被藏。
+function clearDeliveryNameFilter() {
+  if (!stack.nameFilter && !searchBox.value && !searchBroad) return;
+  clearTimeout(searchTimer);
+  searchBroad = false;
+  chipsEl.classList.remove('muted');
+  searchBox.value = '';
+  stack.setNameFilter('');
+  nameHitsQuery('');
+  if (lockedFolder) tree.setExts(extsParam());
+}
+
 let projSeq = 0;   // 連續投影的世代號：後到的取代先到的，慢的那次結果丟掉
 // 回傳 true＝打開了、false＝打不開（路徑不存在／沒權限／被後到的投影取代）
 async function projectOpen(path, line) {
@@ -2564,6 +2585,7 @@ async function projectOpen(path, line) {
   // 鍵盤導航可能有一趟載入還在等：投影是明確意圖，取消它，別让它半路蓋掉
   clearTimeout(navTimer); navTimer = null;
   previewCrowCancel();
+  clearDeliveryNameFilter();
   if (norm(dir) !== norm(lockedFolder || '') || convoState) {
     exitPseudo(true);
     // 一律走 tree.lock()：樹內部的 lockedPath／選取列／麵包屑才會跟投影結果一致；
@@ -2582,11 +2604,14 @@ async function projectOpen(path, line) {
   }
   if (stale()) return false;
   if (!f) { toast(t('projGone', { name })); return false; }
+  // chips 濾掉的（例如只勾 .md 時推來一張 .png）：補回卡堆，關掉閱讀欄也還看得到它
+  stack.ensureViewed([f], f.path);
   stack.readingPath = f.path;
   stack.poke();
   if (PANEL) reader.setOpen(true);   // 側邊欄：?open=／投影也走整欄閱讀覆層（以前開了個看不見的右欄）
-  // 投影是明確意圖：直接給閱讀「2/3」大版面；已經是 wide／full 就原地換檔，不重切
-  else if (mode === 'twocol' || mode === 'threecol') setMode('wide');
+  // 交付要能看：閱讀欄整個畫面（full），不是留一條死左欄的 2/3 版面。
+  // 已經在 full 就原地換檔，不重切；要逛檔案按 Esc／點樹就會離開（onLock 會回三欄）。
+  else if (mode !== 'full') setMode('full');
   reader.show();
   await reader.open(f);
   if (stale()) return false;

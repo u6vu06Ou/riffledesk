@@ -10,6 +10,7 @@ const path = require('node:path');
 const { URL } = require('node:url');
 const cp = require('node:child_process');
 const convos = require('./convos.js'); // AI-transcript scanner (no-op cost until /api/conv* is hit)
+const agentroots = require('./agentroots.js'); // folders AI agents worked in → automatic index roots
 const { createIndexer } = require('./indexer');
 const { createFileOps, writeAtomic } = require('./fileops');
 const { scanText, maskValue, looksBinary: looksSecretBinary, anySegmentSkipped } = require('./secrets');
@@ -328,7 +329,10 @@ function loadConfig() {
     // no: nothing lives outside DEMO_DIR, scope = the whole fake home
     return cfg;
   }
-  const cfg = { roots: defaultRoots(), pinned: [], indexContent: DEFAULT_INDEX_CONTENT };
+  // tests must never discover (and crawl) the real user's agent workspaces:
+  // under NODE_ENV=test it is on only with a fake RIFFLEDESK_AGENT_HOME
+  const agentRootsDefault = process.env.NODE_ENV !== 'test' || !!process.env.RIFFLEDESK_AGENT_HOME;
+  const cfg = { roots: defaultRoots(), pinned: [], indexContent: DEFAULT_INDEX_CONTENT, indexAgentRoots: agentRootsDefault };
   try {
     let rawText = null;
     try { rawText = fs.readFileSync(CONFIG_PATH, 'utf8'); } catch (_) {}
@@ -344,6 +348,7 @@ function loadConfig() {
       if (Array.isArray(raw.roots)) cfg.roots = raw.roots.map(expandHome);
       if (Array.isArray(raw.pinned)) cfg.pinned = raw.pinned.map(expandHome);
       if (Array.isArray(raw.convoRoots)) cfg.convoRoots = raw.convoRoots; // AI transcript roots (strings or {kind,dir})
+      if (raw.indexAgentRoots !== undefined) cfg.indexAgentRoots = !!raw.indexAgentRoots && agentRootsDefault;
       if (Array.isArray(raw.indexSkipDirs)) cfg.indexSkipDirs = raw.indexSkipDirs.map(String);
       if (Number.isFinite(Number(raw.indexMaxMB))) cfg.indexMaxMB = Number(raw.indexMaxMB);
       // full-recrawl cadence in hours (default 24; fs.watch keeps the index live between crawls)
@@ -373,6 +378,61 @@ function saveConfig(cfg) {
 
 let config = loadConfig();
 function persistConfig() { saveConfig(config); realScopesCache = null; }
+
+// ---------- agent workspaces: automatic index roots ----------
+// Agent session records carry the folder each agent worked in; a delivered
+// file (pile item, projection) maps up to its project folder. Discovery is event driven:
+// one scan at boot, then a watcher on the session folders reads only the head of a new
+// or grown transcript. If no watcher can be armed (platform without recursive watch,
+// missing folder) the daily index recrawl re-scans instead — never an hourly poll.
+// config.indexAgentRoots=false turns it off.
+const AGENT_RECENT_MAX = 300;
+let agentRoots = [];
+let agentRootsScanning = false;
+let agentSessionWatcher = null;
+const agentRecentFiles = []; // recently delivered files (bounded, newest last)
+
+function noteAgentDelivered(abs) {
+  if (typeof abs !== 'string' || !abs) return;
+  agentRecentFiles.push(abs);
+  while (agentRecentFiles.length > AGENT_RECENT_MAX) agentRecentFiles.shift();
+}
+
+// add cwds that came from a watcher event, without the (more expensive) full scan
+function addAgentCwds(cwds) {
+  if (config.indexAgentRoots === false || !cwds.length) return;
+  const found = agentroots.select(cwds, { existingRoots: [...existingRoots(), ...agentRoots], isAllowed });
+  if (!found.length) return;
+  applyAgentRoots([...agentRoots, ...found]);
+}
+
+function applyAgentRoots(found) {
+  const changed = found.length !== agentRoots.length || found.some((r, i) => r !== agentRoots[i]);
+  if (!changed) return;
+  agentRoots = found;
+  realScopesCache = null;
+  if (found.length) console.log(`${PKG.name}: agent workspaces indexed: ${found.join(' | ')}`);
+  if (indexer && indexer.refreshAgentRoots) indexer.refreshAgentRoots();
+}
+
+function refreshAgentRoots(opts = {}) {
+  if (config.indexAgentRoots === false) {
+    if (agentRoots.length) { agentRoots = []; realScopesCache = null; }
+    return agentRoots;
+  }
+  if (agentRootsScanning) return agentRoots;
+  agentRootsScanning = true;
+  try {
+    const delivered = [...piles.flatMap(p => p.paths), ...agentRecentFiles];
+    const found = agentroots.discover({ existingRoots: existingRoots(), isAllowed, deliveredFiles: delivered });
+    applyAgentRoots(found);
+  } catch (err) {
+    console.log(`${PKG.name}: agent root scan failed: ${err.message}`);
+  } finally {
+    agentRootsScanning = false;
+  }
+  return agentRoots;
+}
 
 // ---------- local fixed drives / mounts ----------
 // What the front end may open without a config root. Windows stays "every fixed
@@ -501,6 +561,7 @@ function allowedScopes() {
   else scopes.add(norm(PUBLIC_DIR));   // the app's own assets are served through /raw/ too
   for (const r of config.roots) scopes.add(norm(r));
   for (const p of config.pinned) scopes.add(norm(p));
+  for (const r of agentRoots) scopes.add(norm(r));
   return [...scopes];
 }
 
@@ -1319,8 +1380,58 @@ async function apiRecentMod(res, u) {
 // The search box's local filter only sees the folder on screen; this answers
 // "does the file exist anywhere?" while typing. Index-only (no walk); every
 // hit is re-checked with isAllowed because extra roots may leave the scope.
-// index unavailable → { ok: true, files: [], indexed: false } (UI just shows
-// nothing rather than an error).
+// index unavailable → the delivered list alone still answers (indexed: false).
+//
+// Delivered files: pile paths + the recent-projection list. Those often sit
+// outside the indexed roots or in dot-folders the crawler skips, so the index
+// alone would answer "no such file" for the very file an agent just handed over.
+// Cached in memory (stat-ing a few hundred paths on every keystroke is wasteful);
+// invalidated when a pile is stored or a transcript change makes the hub rescan.
+let deliveredNamesCache = null; // { t, rows }
+const DELIVERED_NAMES_TTL = 30000;
+function invalidateDeliveredNames() { deliveredNamesCache = null; }
+
+const DELIVERED_MAX = 3000;   // cap so the sync stats stay cheap even on a busy hub
+function deliveredNames() {
+  if (deliveredNamesCache && Date.now() - deliveredNamesCache.t < DELIVERED_NAMES_TTL) return deliveredNamesCache.rows;
+  const paths = new Set();
+  for (const p of piles) for (const x of p.paths) if (paths.size < DELIVERED_MAX) paths.add(x);
+  // transcript files are unbounded (thousands) — newest conversations first, then stop
+  const scan = convoScanCache && convoScanCache.result;
+  if (scan) {
+    const convos = scan.convos.slice().sort((a, b) => b.updated - a.updated);
+    for (const c of convos) {
+      for (const f of c.files) {
+        if (paths.size >= DELIVERED_MAX) break;
+        paths.add(f.path);
+      }
+    }
+  }
+  const rows = [];
+  for (const raw of paths) {
+    if (typeof raw !== 'string' || !raw || raw.includes('\0')) continue;
+    const abs = path.resolve(demoReal(raw));
+    if (!isAllowed(abs)) continue;          // string-only check first, no fs touch
+    let st;
+    try { st = fs.statSync(abs); } catch (_) { continue; }   // deleted since → drop
+    if (!st.isFile()) continue;
+    rows.push(fileInfoOf(path.dirname(abs), path.basename(abs), st.size, st.mtimeMs));
+  }
+  // before the first transcript scan has finished (fresh boot) only piles are
+  // known — do not pin that partial list for 30 s, or a just-delivered file
+  // stays unfindable right after a restart
+  if (scan) deliveredNamesCache = { t: Date.now(), rows };
+  return rows;
+}
+
+// rank bucket: 0 exact name, 1 starts-with, 2 contains-only
+function nameBucket(name, q) {
+  const ln = name.toLowerCase();
+  const lq = q.toLowerCase();
+  if (ln === lq || ln === lq + path.extname(name).toLowerCase()) return 0;
+  return ln.startsWith(lq) ? 1 : 2;
+}
+
 async function apiNames(res, u) {
   const t0 = Date.now();
   const q = (u.searchParams.get('q') || '').trim();
@@ -1328,10 +1439,8 @@ async function apiNames(res, u) {
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(200, Math.floor(rawLimit)) : 50;
   if (!q) return sendJson(res, 400, { ok: false, error: 'empty q' });
   if (q.length > 200) return sendJson(res, 400, { ok: false, error: 'q too long' });
-  if (!indexer || !indexer.available || !indexer.nameSearch) {
-    return sendJson(res, 200, { ok: true, files: [], ms: Date.now() - t0, indexed: false });
-  }
-  let rows;
+  let delivered = [];
+  try { delivered = deliveredNames(); } catch (_) { delivered = []; }   // index-off must never 500 here
   const extsRaw = u.searchParams.get('exts');
   // 壞掉的 exts 不該讓整個面板 500：退回「全部」；太多副檔名就截斷（SQLite 變數上限）
   let filter = { mode: 'all' };
@@ -1340,15 +1449,47 @@ async function apiNames(res, u) {
     if (filter.set && filter.set.size > 200) filter = { mode: 'set', set: new Set([...filter.set].slice(0, 200)) };
     if (filter.set && !filter.set.size) filter = { mode: 'all' };   // "exts=,," 之類：當作沒篩
   }
-  try { rows = indexer.nameSearch(q, limit * 2, filter); } catch (_) { rows = null; }
-  if (!rows) return sendJson(res, 200, { ok: true, files: [], ms: Date.now() - t0, indexed: false });
-  const files = [];
-  for (const r of rows) {
-    if (files.length >= limit) break;
-    if (!isAllowed(r.path)) continue;
-    files.push({ name: r.name, path: r.path, dir: r.dir, mtime: r.mtime, size: r.size, ext: r.ext });
+  const indexed = !!(indexer && indexer.available && indexer.nameSearch);
+  let rows = null;
+  if (indexed) { try { rows = indexer.nameSearch(q, limit * 2, filter); } catch (_) { rows = null; } }
+  const ql = q.toLowerCase();
+  const seen = new Set();
+  const bucketOf = [];   // [bucket][0]=delivered, [bucket][1]=index hits
+  for (let i = 0; i < 3; i++) bucketOf.push([[], []]);
+
+  // delivered first: these are the files an agent actually handed over (usually
+  // the one being hunted), and they are cheap — a few hundred cached names.
+  for (const f of delivered) {
+    if (!f.name.toLowerCase().includes(ql)) continue;
+    if (!extMatches(f.ext, filter)) continue;
+    if (!isAllowed(f.path)) continue;   // the allowlist may have shrunk since the cache was built
+    const k = norm(f.path);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    bucketOf[nameBucket(f.name, q)][0].push({ name: f.name, path: f.path, dir: f.dir, mtime: f.mtime, size: f.size, ext: f.ext, delivered: true });
   }
-  return sendJson(res, 200, { ok: true, files, ms: Date.now() - t0, indexed: true });
+  if (rows) {
+    // index rows already arrive in bucket order (exact, prefix, mtime DESC); the
+    // per-row bucket call keeps that when the union is merged below.
+    for (const r of rows) {
+      if (seen.has(norm(r.path))) continue;
+      if (!isAllowed(r.path)) continue;
+      seen.add(norm(r.path));
+      bucketOf[nameBucket(r.name, q)][1].push({ name: r.name, path: r.path, dir: r.dir, mtime: r.mtime, size: r.size, ext: r.ext });
+    }
+  }
+  const files = [];
+  for (const [deliveredRows, indexRows] of bucketOf) {
+    for (const list of [deliveredRows, indexRows]) {
+      for (const f of list) {
+        if (files.length >= limit) break;
+        files.push(f);
+      }
+      if (files.length >= limit) break;
+    }
+    if (files.length >= limit) break;
+  }
+  return sendJson(res, 200, { ok: true, files, ms: Date.now() - t0, indexed });
 }
 async function apiWhichConvo(res, u) {
   const q = u.searchParams.get('path');
@@ -1459,6 +1600,7 @@ function convoHubStart() {
     try { sig = convoTranscriptSig(); } catch (_) { return; }
     if (sig === convoHub.sig) return;
     convoHub.sig = sig;
+    invalidateDeliveredNames();
     convoScanCache = null;
     for (const res of convoHub.subs) sendSse(res, 'convos', { at: Date.now() });
   }, CONVO_POLL_MS);
@@ -1602,6 +1744,8 @@ function apiProject(req, res) {
     const line = Number.isFinite(rawLine) && rawLine > 0 ? Math.floor(rawLine) : null;
     const source = typeof payload.source === 'string' ? payload.source.slice(0, 40) : null;
     const diff = await diffStatOf(abs);
+    noteAgentDelivered(abs);
+    if (!agentRootsScanning) refreshAgentRoots();
     const data = { path: abs, line, source, at: Date.now(), diff };
     let delivered = 0;
     // 側邊欄（?panel=1 的 SSE 客戶）收不到投影：它沒有閱讀欄，檔案投影要投到完整視窗。
@@ -1700,6 +1844,9 @@ function apiPile(req, res) {
     piles.push(pile);
     if (piles.length > PILE_KEEP) piles = piles.slice(-PILE_KEEP);
     savePiles();
+    invalidateDeliveredNames();
+    for (const f of pile.paths) noteAgentDelivered(f);
+    if (!agentRootsScanning) refreshAgentRoots();
     const data = { id: pile.id, title, count: pile.paths.length, source, createdAt: pile.createdAt };
     let delivered = 0;
     // 同 /api/project：側邊欄精簡模式不接收疊（它沒有左欄可放）
@@ -2450,7 +2597,7 @@ async function requestHandler(req, res, server) {
     if (p === '/api/index/status') {
       const s = indexer && indexer.available
         ? indexer.status()
-        : { available: false, files: 0, roots: [], crawling: false, lastCrawlMs: null, lastCrawlAt: null, contentEnabled: null, dbBytes: null };
+        : { available: false, files: 0, roots: [], agentRoots, crawling: false, lastCrawlMs: null, lastCrawlAt: null, contentEnabled: null, dbBytes: null };
       return sendJson(res, 200, { ok: true, ...s });
     }
 
@@ -2529,12 +2676,27 @@ async function requestHandler(req, res, server) {
 
 // ---------- startup ----------
 function start(port) {
+  // agent workspaces first: the index's root list is read when the worker starts.
+  // After the boot scan the session folders are WATCHED; no hourly polling.
+  refreshAgentRoots();
+  if (config.indexAgentRoots !== false && !DEMO_DIR) {
+    agentSessionWatcher = agentroots.watchSessions({
+      onCwd: c => { try { addAgentCwds([c]); } catch (_) {} }
+    });
+    if (!agentSessionWatcher) {
+      // no watcher: fall back to the daily recrawl cadence, never an hourly poll
+      const hours = Number(config.indexRecrawlHours) > 0 ? Number(config.indexRecrawlHours) : 24;
+      const t = setInterval(() => refreshAgentRoots({ force: true }), hours * 3600000);
+      if (t.unref) t.unref();
+      console.log(`${PKG.name}: agent session folders not watchable — roots refresh every ${hours}h`);
+    }
+  }
   // persistent full-text index next to config.json (set RIFFLEDESK_INDEX=off to
   // disable; when node:sqlite is missing the server just keeps live-scanning)
   if (String(process.env.RIFFLEDESK_INDEX || '').toLowerCase() !== 'off' && !indexer) {
     const idx = createIndexer({
       dbPath: path.join(path.dirname(CONFIG_PATH), 'index.db'),
-      norm, parseExts, getRoots: existingRoots,
+      norm, parseExts, getRoots: existingRoots, getAgentRoots: () => agentRoots,
       getScopes: () => ({ scopes: allowedScopes(), realScopes: realScopes() }),
       getIndexOptions: () => {
         const mb = Number(config.indexMaxMB);

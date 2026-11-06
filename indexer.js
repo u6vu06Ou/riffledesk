@@ -41,7 +41,7 @@ function fmtAge(ms) { return ms < 2 * 3600000 ? `${Math.round(ms / 60000)} min` 
 
 function createIndexer(deps) {
   const {
-    dbPath, norm, parseExts, getRoots, getScopes, getIndexOptions,
+    dbPath, norm, parseExts, getRoots, getScopes, getIndexOptions, getAgentRoots,
     READABLE_EXTS, KIND, TEXTLIKE,
     log = () => {}
   } = deps;
@@ -53,7 +53,7 @@ function createIndexer(deps) {
     lastCrawlMs: null,
     lastCrawlAt: null,
     schedule, crawlAll, crawlRoot, stop,
-    search, deepCounts, status, reindexDir, noteListDir, noteSearchOutside,
+    search, deepCounts, status, reindexDir, noteListDir, noteSearchOutside, refreshAgentRoots,
     renamed, removed, setContentEnabled, secretFlags, directCounts, listPage,
     recentModified, nameSearch
   };
@@ -192,10 +192,23 @@ function createIndexer(deps) {
     } catch (_) { return []; }
   }
 
+  // configured roots + agent workspaces (auto-discovered; server refreshes them)
+  function agentRootsNow() {
+    if (!getAgentRoots) return [];
+    let list = [];
+    try { list = getAgentRoots() || []; } catch (_) {}
+    const out = [];
+    for (const r of list) {
+      try { if (!fs.statSync(r).isDirectory()) continue; } catch (_) { continue; }
+      out.push(r);
+    }
+    return out;
+  }
+
   function mainRoots() {
     const out = [];
     const seen = new Set();
-    for (const r of getRoots()) {
+    for (const r of [...getRoots(), ...agentRootsNow()]) {
       const n = norm(r);
       if (!seen.has(n)) { seen.add(n); out.push(r); }
     }
@@ -239,7 +252,7 @@ function createIndexer(deps) {
     const { scopes, realScopes } = getScopes();
     const opts = getIndexOptions ? getIndexOptions() : {};
     return {
-      op: 'crawl', roots: getRoots(), scopes, realScopes,
+      op: 'crawl', roots: mainRoots(), scopes, realScopes,
       skipDirs: opts.skipDirs || [],
       maxMB: (typeof opts.maxMB === 'number' ? opts.maxMB : 2048),
       contentEnabled: opts.contentEnabled !== false,
@@ -272,7 +285,7 @@ function createIndexer(deps) {
     scheduleActuallyCalled = true;
     maybeBootCrawl(); // no-op until the worker's 'ready' set lastCrawlAt
     const { scopes, realScopes } = getScopes();
-    send({ op: 'watch', roots: getRoots(), scopes, realScopes }); // watchers do not need a crawl
+    send({ op: 'watch', roots: mainRoots(), scopes, realScopes }); // watchers do not need a crawl
     intervalTimer = setInterval(() => send(crawlJob()), recrawlMs());
     intervalTimer.unref();
   }
@@ -290,6 +303,8 @@ function createIndexer(deps) {
   }
 
   function crawlAll() { send(crawlJob()); }
+  // agent workspaces changed: re-arm the watchers and crawl the new roots
+  function refreshAgentRoots() { if (!idx.available) return; crawlAll(); }
   function crawlRoot(_rootAbs) { send(crawlJob()); } // jobs always refresh all roots
   function reindexDir(abs) { send({ op: 'reindexDir', abs }); }
 
@@ -396,7 +411,7 @@ function createIndexer(deps) {
 
   function status() {
     if (!idx.available) {
-      return { available: false, files: 0, filesWithContent: 0, capped: false, contentEnabled: null, roots: [], crawling: false, lastCrawlMs: null, lastCrawlAt: null, dbBytes: dbBytesOnDisk() };
+      return { available: false, files: 0, filesWithContent: 0, capped: false, contentEnabled: null, roots: [], agentRoots: [], crawling: false, lastCrawlMs: null, lastCrawlAt: null, dbBytes: dbBytesOnDisk() };
     }
     let files = lastKnownFiles;
     let filesWithContent = null;
@@ -417,6 +432,7 @@ function createIndexer(deps) {
       capped,
       contentEnabled,
       roots: mainRoots(),
+      agentRoots: agentRootsNow(),
       crawling: idx.crawling,
       lastCrawlMs: idx.lastCrawlMs,
       lastCrawlAt: idx.lastCrawlAt,

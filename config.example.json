@@ -5,6 +5,7 @@
   "indexMaxMB": 2048,
   "indexContent": true,
   "indexRecrawlHours": 24,
+  "indexAgentRoots": true,
   "secretScan": true,
   "secretScanSkipDirs": []
 }

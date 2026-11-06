@@ -524,6 +524,21 @@ export class StackScene {
     this.notifySelection();   // 清單變了，全選鈕狀態要跟著重算
   }
 
+  // AI 交付的檔被類型 chips 濾掉了：把它補回卡堆（沒有才加），焦點停在 anchor。
+  // 交付的東西一定要看得到——連卡片也一樣，否則「打開了」卻在卡堆裡找不到它。
+  ensureViewed(files, anchorPath) {
+    const add = (files || []).filter(f => f && !this.files.some(x => x.path === f.path));
+    if (add.length) {
+      this.files = this.files.concat(add);
+      this.view = this.sorted(this.view.concat(add));
+      this.total = this.files.length;
+      this.rebindAll(false);
+    }
+    const i = this.view.findIndex(f => f.path === anchorPath);
+    if (i >= 0) { this.scrollTarget = i; this.scrollCur = i; this.scrollVel = 0; }
+    this.poke();
+  }
+
   windowBase() { return Math.floor(this.scrollCur) - 3; }
 
   // 使用者正在捲／阻尼還沒停：這段時間內不換清單，免得位置被拉走

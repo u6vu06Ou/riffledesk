@@ -80,6 +80,16 @@ async function getJson(base, p) {
   return { status: res.status, body: await res.json() };
 }
 
+// projection tooling posts a pile of delivered files; the name panel must see those too
+async function postPile(base, paths) {
+  const res = await fetch(base + '/api/pile', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-riffledesk-cli': '1' },
+    body: JSON.stringify({ paths })
+  });
+  return { status: res.status, body: await res.json() };
+}
+
 async function waitCrawled(maxMs = 30000) {
   const t0 = Date.now();
   for (;;) {
@@ -180,6 +190,55 @@ test('names suite', async (t) => {
     // 'readable' = the known kinds; images are readable too, so it must not be empty
     const readable = await getJson(BASE, '/api/names?q=radar&exts=readable');
     assert.ok(readable.body.files.some(f => f.name.endsWith('.md')));
+  });
+
+  // ---- delivered files (piles): outside the indexed roots / in dot-folders ----
+  const OUT_FILE = path.join(OUT, 'rust-rewrite-goal-prompt.md');
+  const DOT_FILE = path.join(FIX, '.review', 'work-orders', '2026-11-05_rust-rewrite-plan.png');
+  fs.mkdirSync(path.dirname(DOT_FILE), { recursive: true });
+
+  await t.test('a delivered file outside the index is found', async () => {
+    fs.writeFileSync(OUT_FILE, 'order\n');
+    fs.writeFileSync(DOT_FILE, 'png\n');
+    const pile = await postPile(BASE, [OUT_FILE, DOT_FILE]);
+    assert.equal(pile.status, 200, JSON.stringify(pile.body));
+    const { status, body } = await getJson(BASE, '/api/names?q=rust-rewrite');
+    assert.equal(status, 200, JSON.stringify(body));
+    const hit = body.files.find(f => f.path === OUT_FILE);
+    assert.ok(hit, 'delivered file must be found: ' + JSON.stringify(body.files));
+    assert.equal(hit.delivered, true);
+    assert.ok(body.files.some(f => f.path === DOT_FILE), 'dot-folder file must be found too');
+    // delivered rows rank before index rows inside the same bucket
+    const bucketOf = n => (n === 'rust-rewrite-goal-prompt.md' ? 0 : 2);
+    const firstIndex = body.files.findIndex(f => !f.delivered);
+    if (firstIndex > 0) {
+      const idx = body.files[firstIndex];
+      const before = body.files.slice(0, firstIndex);
+      assert.ok(before.every(f => bucketOf(f.name) <= bucketOf(idx.name)),
+        'delivered must precede an equal-or-worse index bucket: ' + JSON.stringify(body.files.map(f => f.name)));
+    }
+    assert.equal(body.files[0].delivered, true, JSON.stringify(body.files.map(f => f.path)));
+  });
+
+  await t.test('exts filter applies to delivered rows', async () => {
+    const md = await getJson(BASE, '/api/names?q=rust-rewrite&exts=.md');
+    assert.ok(md.body.files.every(f => f.ext === '.md'), JSON.stringify(md.body.files));
+    assert.ok(md.body.files.some(f => f.path === OUT_FILE));
+    assert.ok(!md.body.files.some(f => f.path === DOT_FILE));
+    const png = await getJson(BASE, '/api/names?q=rust-rewrite&exts=.png');
+    assert.ok(png.body.files.some(f => f.path === DOT_FILE));
+  });
+
+  await t.test('a deleted delivered file is dropped', async () => {
+    fs.unlinkSync(OUT_FILE);
+    // re-post a pile so the delivered-name cache is rebuilt after the delete
+    await postPile(BASE, [DOT_FILE]);
+    const { body } = await getJson(BASE, '/api/names?q=rust-rewrite');
+    assert.ok(!body.files.some(f => f.path === OUT_FILE), 'deleted file still listed: ' + JSON.stringify(body.files));
+    assert.ok(body.files.some(f => f.path === DOT_FILE));
+    fs.rmSync(DOT_FILE, { force: true });
+    fs.rmSync(path.join(FIX, '.review'), { recursive: true, force: true });
+    fs.rmSync(path.dirname(OUT_FILE), { recursive: true, force: true });
   });
 
   await t.test('index unavailable → ok:true, empty, indexed:false', async () => {

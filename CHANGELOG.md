@@ -1,5 +1,14 @@
 # Changes
 
+## 0.4.5 — 2026-11-06
+
+- Agent deliveries always show and get a sane layout: a single delivered file opens with the reader full-width (any file type, even when the type chips or the name filter would have hidden it); a delivered pile opens in three columns with the split reset to half/half and the whole pile centered in the middle column, the front card open in the reader. Your own folder browsing is unchanged.
+- Name search also matches **delivered files** (piles and recently delivered transcripts), not just the index, so a file an agent handed you is findable by name even outside every indexed root.
+- Folders where AI agents worked become index roots automatically. Sources: Claude Code, Codex CLI, Gemini CLI, Antigravity CLI, Grok CLI, GitHub Copilot CLI, Factory Droid, Qwen Code, Continue, Amp, Cline CLI, and the Roo Code / Cline extensions in VS Code-family editors (Code, Cursor, Windsurf, Antigravity, VSCodium). Only the recorded working folder is read (bounded file heads, never conversation text or tokens); new sessions are picked up through `fs.watch` on the agents' session folders, no polling. Drive roots, the home folder, system/temp folders and cloud-synced folders (Google Drive, OneDrive, Dropbox, iCloud — crawling them would download the drive) are never added; 3+ sibling folders collapse to their parent. Config `indexAgentRoots` (default true); `/api/index/status` lists `agentRoots`.
+- CI: unit and browser tests run on a GitHub-hosted Mac on every push.
+
+Validation: Windows 362 unit tests, 361 passed, one POSIX-only skip, no failures; browser e2e for delivery layout, piles, projection, pile type filter, tables and name search pass.
+
 ## 0.4.4 — 2026-11-05
 
 - Fresh search also finds files in brand-new folders and in nested new folders created during a crawl (the watcher's pending-dir paths were resolved against the wrong base, unknown dirs never triggered the pass, and a missing argument silently dropped every content hit).

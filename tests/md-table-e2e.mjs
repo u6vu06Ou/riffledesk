@@ -166,6 +166,8 @@ async function main() {
   await page.evaluate(() => { document.querySelector('#readerBody.md .md-table-wrap').scrollTop = 0; });
 
   // ---------- 10 columns: must scroll inside the wrapper, not push the page wide
+  // deliveries open full-width now, so give the 10-column table a pane it cannot fit
+  await page.setViewportSize({ width: 1400, height: 900 });
   await open(XWIDE, 'extra-wide-table.md');
   const xw = await page.evaluate(() => {
     const wrap = document.querySelector('#readerBody.md .md-table-wrap');

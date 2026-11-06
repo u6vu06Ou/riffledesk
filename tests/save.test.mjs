@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PORT = 5190;
+const PORT = 5199;
 const BASE = `http://127.0.0.1:${PORT}`;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
@@ -40,7 +40,7 @@ fs.writeFileSync(CONFIG_PATH, JSON.stringify({ roots: [FIX], pinned: [] }, null,
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const proc = spawn('node', ['server.js'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH, RIFFLEDESK_INDEX: 'off' },
+  env: { ...process.env, PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH, RIFFLEDESK_INDEX: 'off', RIFFLEDESK_AGENT_HOME: TMP },
   stdio: ['ignore', 'pipe', 'pipe'],
   windowsHide: true
 });

@@ -127,6 +127,13 @@ function row(f, i) {
   sub.append(dir, date);
   d.title = f.path;
   d.append(name, sub);
+  // an agent handed this one over (pile / recent projection) — the files people hunt for
+  if (f.delivered) {
+    const tag = document.createElement('span');
+    tag.className = 'nh-deliv';
+    tag.textContent = t('nameDelivered');
+    name.append(' ', tag);
+  }
   return d;
 }
 

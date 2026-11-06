@@ -156,7 +156,11 @@ Chromium、Firefox、Safari（後兩者最新版）。卡片堆需要 WebGL；�
 
 ## 設定
 
-第一次啟動會產生 `config.json`（不進 git；`config.example.json` 是空白範本）。鍵有：`roots`（額外可瀏覽根目錄）、`pinned`（釘選，介面會寫回）、`indexSkipDirs`、`indexMaxMB`、`indexContent`、`indexRecrawlHours`（全量重爬間隔，預設 24 小時；兩次之間靠 `fs.watch` 在 ~1.5 秒內保持索引新鮮）、`secretScan`、`secretScanSkipDirs`、`convoRoots`、`browser`。用 `RIFFLEDESK_CONFIG` 指向別的檔可以隔離一份設定。
+第一次啟動會產生 `config.json`（不進 git；`config.example.json` 是空白範本）。鍵有：`roots`（額外可瀏覽根目錄）、`pinned`（釘選，介面會寫回）、`indexSkipDirs`、`indexMaxMB`、`indexContent`、`indexAgentRoots`（自動把 AI agent 實際工作過的資料夾也納入索引：從本機 agent 的 session 紀錄與投過來／疊過的檔反推，預設 `true`）、`indexRecrawlHours`（全量重爬間隔，預設 24 小時；兩次之間靠 `fs.watch` 在 ~1.5 秒內保持索引新鮮）、`secretScan`、`secretScanSkipDirs`、`convoRoots`、`browser`。用 `RIFFLEDESK_CONFIG` 指向別的檔可以隔離一份設定。
+
+### 自動索引 agent 工作資料夾
+
+`indexAgentRoots` 開啟時，以有上限的本機 session 讀取自動加入 **Claude Code、Codex CLI、Gemini CLI、Antigravity CLI、Grok CLI、GitHub Copilot CLI、Factory Droid、Qwen Code、Continue、Amp、Cline CLI，以及 Roo Code／Cline 延伸**的工作資料夾。延伸支援 VS Code、Code - Insiders、Cursor、Windsurf、Antigravity、Antigravity IDE 與 VSCodium。開機時讀一次既有 session，之後監看已存在的 session 目錄；不輪詢，也不掃整顆磁碟。只抽取工作區路徑欄位（不讀權杖），限制檔案數與位元組數，支援 file URI 解碼；目錄不存在或 JSON 壞掉都會安靜略過。支援 `COPILOT_HOME`、`FACTORY_HOME_OVERRIDE`、`CLINE_DATA_DIR`、`GROK_HOME`、`CONTINUE_GLOBAL_DIR` 與 `GEMINI_CLI_HOME` 自訂位置。
 
 ## 開發
 

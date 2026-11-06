@@ -157,7 +157,11 @@ Chromium, Firefox and Safari — the last two latest versions. The card stack ne
 
 ## Configuration
 
-`config.json` is created on first start (git-ignored; `config.example.json` is the blank template). Keys: `roots` (extra browsable roots), `pinned` (starred folders, written back by the UI), `indexSkipDirs`, `indexMaxMB`, `indexContent`, `indexRecrawlHours` (full-recrawl cadence, default 24 — `fs.watch` keeps the index live within ~1.5 s between crawls), `secretScan`, `secretScanSkipDirs`, `convoRoots`, `browser`. Point `RIFFLEDESK_CONFIG` at another file to isolate a profile.
+`config.json` is created on first start (git-ignored; `config.example.json` is the blank template). Keys: `roots` (extra browsable roots), `pinned` (starred folders, written back by the UI), `indexSkipDirs`, `indexMaxMB`, `indexContent`, `indexAgentRoots` (index the folders AI agents worked in — inferred from local agent session records and delivered pile/projection files — default `true`), `indexRecrawlHours` (full-recrawl cadence, default 24 — `fs.watch` keeps the index live within ~1.5 s between crawls), `secretScan`, `secretScanSkipDirs`, `convoRoots`, `browser`. Point `RIFFLEDESK_CONFIG` at another file to isolate a profile.
+
+### Automatic agent-workspace roots
+
+With `indexAgentRoots` enabled, bounded reads of local session records automatically add workspaces from **Claude Code, Codex CLI, Gemini CLI, Antigravity CLI, Grok CLI, GitHub Copilot CLI, Factory Droid, Qwen Code, Continue, Amp, Cline CLI, and the Roo Code / Cline extensions**. The extensions are found in VS Code, Code - Insiders, Cursor, Windsurf, Antigravity, Antigravity IDE, and VSCodium. Existing sessions are read once at boot and existing session directories are watched afterward; discovery never polls and never scans a whole drive. Only workspace path fields are extracted (never tokens), scans have file/byte caps, file URIs are decoded, and missing or malformed records are ignored. `COPILOT_HOME`, `FACTORY_HOME_OVERRIDE`, `CLINE_DATA_DIR`, `GROK_HOME`, `CONTINUE_GLOBAL_DIR`, and `GEMINI_CLI_HOME` relocations are honored.
 
 ## Development
 

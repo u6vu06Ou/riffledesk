@@ -241,9 +241,11 @@ async function fetchPiles() {
 }
 
 // A pile row / notification click: main.js loads it into the card stack.
+// deliver=true: the stack must land in the three-column layout with the whole pile centred
+// in the middle column, whatever layout the tab happened to be in (main.js explains why).
 async function openPile(id, row) {
   if (!deps) return false;
-  return (await deps.openPile(id, row || null)) === true;
+  return (await deps.openPile(id, row || null, true)) === true;
 }
 
 // ------------------------------------------------------------------ opening

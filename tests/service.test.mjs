@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = path.join(ROOT, 'bin/riffledesk.js');
-const PORT = 5190, BASE = `http://127.0.0.1:${PORT}`;
+const PORT = 5195, BASE = `http://127.0.0.1:${PORT}`;
 const exec = promisify(execFile);
 
 test('background server outlives launcher, reuses port, guards lifecycle and restarts with SSE clients', { timeout: 60000 }, async () => {
@@ -21,7 +21,7 @@ test('background server outlives launcher, reuses port, guards lifecycle and res
   const tmp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'riffle-service-'));
   const cfg = path.join(tmp, 'config.json');
   fs.writeFileSync(cfg, JSON.stringify({ roots: [tmp], pinned: [], convoRoots: [] }));
-  const env = { ...process.env, RIFFLEDESK_CONFIG: cfg, RIFFLEDESK_INDEX: 'off' };
+  const env = { ...process.env, RIFFLEDESK_CONFIG: cfg, RIFFLEDESK_INDEX: 'off', RIFFLEDESK_AGENT_HOME: tmp };
   const run = args => exec(process.execPath, [BIN, ...args, '--port', String(PORT)], {
     cwd: ROOT, env, timeout: 25000, windowsHide: true
   });

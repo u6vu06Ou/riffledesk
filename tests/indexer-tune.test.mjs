@@ -52,6 +52,8 @@ fs.writeFileSync(path.join(BROKE, 'appeared.md'), 'the qzappeared token lives he
 
 const CONFIG_PATH = path.join(TMP, 'config.json');
 fs.writeFileSync(CONFIG_PATH, JSON.stringify({ roots: [FIX, BROKE], pinned: [] }, null, 2));
+const EMPTY_HOME = path.join(TMP, 'empty-home');
+fs.mkdirSync(EMPTY_HOME, { recursive: true });
 const DRIVES = [TMP, process.env.RIFFLEDESK_TEST_DRIVES].filter(Boolean).join(path.delimiter);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -64,7 +66,7 @@ const proc = spawn('node', ['server.js'], {
   cwd: ROOT,
   env: {
     ...process.env, NODE_ENV: 'test', RIFFLEDESK_TEST_DRIVES: DRIVES,
-    PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH,
+    PORT: String(PORT), FLODER_CONFIG: CONFIG_PATH, RIFFLEDESK_AGENT_HOME: EMPTY_HOME,
     RIFFLEDESK_RECRAWL_MS: '5000',           // crawls recur but leave idle gaps (a crawl is seconds only at boot)
     RIFFLEDESK_UNWATCH_RESCAN_MS: '300',     // fast unwatchable-root fallback for the test
     RIFFLEDESK_WATCH_FAIL_FOR: 'unwatchable-root', // simulate fs.watch arm failure for BROKE (worker hook)

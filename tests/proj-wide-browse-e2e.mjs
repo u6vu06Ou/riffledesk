@@ -1,9 +1,10 @@
 import { chromeExecutable } from './chrome-path.mjs';
 // tests/proj-wide-browse-e2e.mjs — 歐哥 2026-11-02 回報「AI 投影網頁後介面卡住」的修法驗收：
-//  投影單檔 → wide 大版面（卡堆藏起來）。此時點左欄樹的資料夾原是「零可見回饋」
-//  （mode 停 wide、卡堆不現形、reader 不動，看起來像整個卡住）。
+//  投影單檔 → 閱讀欄整個畫面（卡堆藏起來）。此時點左欄樹的資料夾原是「零可見回饋」
+//  （mode 停著、卡堆不現形、reader 不動，看起來像整個卡住）。
 //  修法：wide／full 下使用者點樹＝要逛檔案 → 回三欄讓卡堆露臉。
-//  投影本身（tree.lock 也走 onLock）不能被彈回：projectOpen 最後仍 setMode('wide')。
+//  投影本身（tree.lock 也走 onLock）不能被彈回：projectOpen 最後仍自己定案版面。
+//  （2026-11-05 起單檔投影落在 full 而不是 wide——見 tests/deliver-layout-e2e.mjs。）
 // 用法：node tests/proj-wide-browse-e2e.mjs
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
@@ -56,7 +57,7 @@ const mode = () => page.evaluate(() => window.__dbg.mode());
 // 點樹上的資料夾（可能要先展開父層）：找不到就把看得見的列逐個展開再試
 async function clickFolder(name, tries = 4) {
   for (let i = 0; i < tries; i++) {
-    const row = page.locator('#tree .trow', { hasText: name }).first();
+    const row = page.locator('#tree .trow:visible', { hasText: name }).first();
     if (await row.count()) { await row.click(); return true; }
     const t = await page.locator('#tree .trow .tw').all();
     if (!t.length) return false;
@@ -88,9 +89,12 @@ try {
   ok(st === 200, '模擬 CLI 投影 a.html', st);
   await page.waitForFunction(() => document.getElementById('readerBody').textContent.includes('AAA'), null, { timeout: 8000 });
   await sleep(600);
-  ok(await mode() === 'wide', '投影後進 wide 大版面');
+  ok(await mode() === 'full', '投影後進全幅閱讀版面');
 
-  // --- B. wide 下點樹上的別的資料夾 → 回三欄（修補點：以前是零回饋卡住） ---
+  // --- B. 全幅下點樹上的別的資料夾 → 回三欄（修補點：以前是零回饋卡住） ---
+  // 全幅藏了樹：Esc 退回 wide 再點（第一下 Esc 先收掉新手說明）
+  await page.keyboard.press('Escape'); await sleep(300); if (await mode() === 'full') await page.keyboard.press('Escape'); await sleep(1200);
+  ok(await mode() === 'wide', 'Esc → wide（樹出現）', { mode: await mode() });
   ok(await clickFolder('other'), '樹上點到 other 資料夾');
   await sleep(800);
   ok(await mode() === 'threecol', 'wide 下點樹 → 回三欄（卡堆露出來）', { mode: await mode() });
@@ -102,11 +106,11 @@ try {
   await sleep(800);
   ok(await mode() === 'threecol', '三欄下點樹 → 維持三欄', { mode: await mode() });
 
-  // --- D. 投影清單列（剛投影給我的）點回去 → reader 換回 a.html、進 wide ---
+  // --- D. 投影清單列（剛投影給我的）點回去 → reader 換回 a.html、進全幅 ---
   await page.locator('#tree .proj-row', { hasText: 'a.html' }).first().click();
   await page.waitForFunction(() => document.getElementById('readerBody').textContent.includes('AAA'), null, { timeout: 8000 });
   await sleep(500);
-  ok(await mode() === 'wide', '點投影清單 → 回 wide 看投影檔', { mode: await mode() });
+  ok(await mode() === 'full', '點投影清單 → 回全幅閱讀看投影檔', { mode: await mode() });
 
   // --- E. 跑起來（執行網頁程式）後再點樹：iframe 內容要留著、版面照樣回三欄 ---
   const btnRun = page.locator('#btnRun');
@@ -114,6 +118,7 @@ try {
     await btnRun.click();
     await sleep(1000);
     ok(await page.evaluate(() => !!document.querySelector('#readerBody iframe')), '執行網頁程式 → iframe 出現');
+    await page.mouse.click(5, 5); await page.keyboard.press('Escape'); await sleep(300); if (await mode() === 'full') await page.keyboard.press('Escape'); await sleep(1000);   // 全幅藏了樹：先退回 wide
     ok(await clickFolder('other'), '執行中點樹 other');
     await sleep(800);
     ok(await mode() === 'threecol', '執行中點樹 → 也回三欄', { mode: await mode() });
